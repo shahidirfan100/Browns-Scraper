@@ -429,6 +429,30 @@ const extractProductsFromHtml = ($) => {
         products.push(item);
     };
 
+    // Global data-segment fallback (covers grid responses where structure may differ)
+    $('[data-segment]').each((_, el) => {
+        const data = parseJsonAttribute($(el).attr('data-segment'));
+        if (!data || typeof data !== 'object') return;
+        const url = data.url ? toAbs(data.url) : null;
+        const image = data.image_url ? toAbs(data.image_url) : null;
+        const colors = data.variant ? [String(data.variant)] : [];
+        const sizes = data.size ? [String(data.size)] : [];
+        pushProduct({
+            title: data.name || null,
+            brand: data.brand || null,
+            price: toNumber(data.price),
+            originalPrice: toNumber(data.retail_price),
+            currency: data.currency || 'CAD',
+            url,
+            image,
+            images: image ? [image] : [],
+            colors,
+            sizes,
+            inStock: true,
+            productId: data.product_id || data.stylenumber || data.sku || null,
+        });
+    });
+
     const getImageFromTag = (img) => {
         let src =
             img.attr('data-src') ||
@@ -723,6 +747,7 @@ try {
 
     let itemsEnqueued = 0;
     let itemsSaved = 0;
+    let maxLimitHit = false;
     let anyItems = false;
     let sitemapQueued = false;
     const seenKeys = new Set();
@@ -798,6 +823,10 @@ try {
             itemsSaved += filtered.length;
             anyItems = true;
             logger?.info?.(`Saved ${filtered.length} items (total ${itemsSaved}/${MAX_ITEMS})`);
+            if (itemsSaved >= MAX_ITEMS && !maxLimitHit) {
+                maxLimitHit = true;
+                logger?.info?.(`Reached max items limit (${MAX_ITEMS}), stopping further pagination/enqueues.`);
+            }
         }
     };
 
@@ -917,6 +946,13 @@ try {
                 },
             ],
             async requestHandler({ request, response, $, session, log: crawlerLog }) {
+                if (itemsSaved >= MAX_ITEMS) {
+                    if (!maxLimitHit) {
+                        maxLimitHit = true;
+                        crawlerLog.info(`Reached max items limit (${MAX_ITEMS}), skipping remaining requests.`);
+                    }
+                    return;
+                }
                 if (response && [403, 407, 429, 597].includes(response.statusCode)) {
                     if ([407, 597].includes(response.statusCode)) {
                         proxyState.authFailed = true;
@@ -924,11 +960,6 @@ try {
                     }
                     session?.markBad();
                     crawlerLog.warning(`Blocked (${response.statusCode}) ${request.url}`);
-                    return;
-                }
-
-                if (itemsSaved >= MAX_ITEMS) {
-                    crawlerLog.info(`Reached max items limit (${MAX_ITEMS})`);
                     return;
                 }
 
@@ -1029,7 +1060,7 @@ try {
                         // Critical fix: Save items immediately and manage queue count
                         await enqueueOrSaveDetails(mapped, crawlerLog);
 
-                        if (usedApi) {
+                        if (usedApi && itemsSaved < MAX_ITEMS) {
                             const total = Number.isFinite(apiData.total) ? apiData.total : null;
                             let offset = Number.isFinite(apiData.offset) ? apiData.offset : startOffset;
                             let limit = Number.isFinite(apiData.limit) ? apiData.limit : pageSize;
@@ -1126,6 +1157,7 @@ try {
                                 break;
                             }
                             await enqueueOrSaveDetails(gridProducts, crawlerLog);
+                            if (itemsSaved >= MAX_ITEMS) break;
                         }
                         gridPaginationDone = true;
                     }
