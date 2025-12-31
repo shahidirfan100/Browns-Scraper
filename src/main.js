@@ -622,7 +622,7 @@ try {
             },
         ],
         async requestHandler({ request, response, $, session, log: crawlerLog }) {
-            if (response && [403, 429].includes(response.statusCode)) {
+            if (response && [403, 407, 429, 597].includes(response.statusCode)) {
                 session?.markBad();
                 crawlerLog.warning(`Blocked (${response.statusCode}) ${request.url}`);
                 return;
@@ -723,8 +723,25 @@ try {
                 }
             }
         },
-        failedRequestHandler({ request, error }, crawlerLog) {
-            crawlerLog.error(`Request failed ${request.url}: ${error?.message || error}`);
+        errorHandler({ request, log: crawlerLog }, error) {
+            const message = error?.message || String(error);
+            if (message.includes('UPSTREAM407') || message.includes('Proxy')) {
+                crawlerLog.warning(
+                    `Proxy authentication failed. Disable Apify Proxy or use an allowed proxy group. (${request.url})`
+                );
+            } else {
+                crawlerLog.warning(`Request failed (retrying) ${request.url}: ${message}`);
+            }
+        },
+        failedRequestHandler({ request, log: crawlerLog }, error) {
+            const message = error?.message || String(error);
+            if (message.includes('UPSTREAM407') || message.includes('Proxy')) {
+                crawlerLog.error(
+                    `Proxy authentication failed. Disable Apify Proxy or use an allowed proxy group. (${request.url})`
+                );
+            } else {
+                crawlerLog.error(`Request failed ${request.url}: ${message}`);
+            }
         },
     });
 
