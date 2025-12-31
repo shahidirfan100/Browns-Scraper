@@ -64,8 +64,8 @@
       "title": "Scrape Detailed Information",
       "type": "boolean",
       "description": "If enabled, the scraper will visit each product page to extract full details (description, materials, etc.). If disabled, it runs much faster but only collects listing data.",
-      "default": true,
-      "prefill": true
+      "default": false,
+      "prefill": false
     },
     "proxyConfiguration": {
       "title": "Proxy Configuration",

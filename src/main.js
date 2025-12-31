@@ -512,7 +512,7 @@ try {
     const minPrice = Number.isFinite(Number(input.minPrice)) ? Number(input.minPrice) : null;
     const maxPrice = Number.isFinite(Number(input.maxPrice)) ? Number(input.maxPrice) : null;
 
-    const scrapeDetails = input.scrapeDetails !== false; // Default to true
+    const scrapeDetails = input.scrapeDetails === true; // Default to false
 
     const MAX_ITEMS = maxItems > 0 ? maxItems : DEFAULT_MAX_ITEMS;
     const MAX_PAGES = maxPages > 0 ? maxPages : DEFAULT_MAX_PAGES;
@@ -824,15 +824,20 @@ try {
                         let limit = Number.isFinite(apiData.limit) ? apiData.limit : pageSize;
                         let pageNum = startPage;
 
-                        // Loop based on itemsEnqueued to ensure we queue enough detail pages
-                        // But also check itemsSaved to stop early if we are in "scrapeDetails=false" mode or if we are satisfied.
+                        // Loop based on itemsSaved to ensure we get enough products
+                        // Continue pagination until we have enough saved items
                         while (
-                            (scrapeDetails ? itemsEnqueued < MAX_ITEMS : itemsSaved < MAX_ITEMS) &&
+                            itemsSaved < MAX_ITEMS &&
                             pageNum < MAX_PAGES
                         ) {
-                            if (total !== null && offset + limit >= total) break;
+                            if (total !== null && offset + limit >= total) {
+                                crawlerLog.info(`Reached end of results (offset ${offset}, total ${total})`);
+                                break;
+                            }
                             offset += limit;
                             pageNum += 1;
+
+                            crawlerLog.info(`Fetching page ${pageNum} with offset ${offset}`);
 
                             // Small delay to be polite to the API
                             await new Promise(r => setTimeout(r, 500));
@@ -845,7 +850,11 @@ try {
                                 logger: crawlerLog,
                             });
 
-                            if (!nextData?.hits?.length) break;
+                            if (!nextData?.hits?.length) {
+                                crawlerLog.warning(`No more products found at offset ${offset}. API may have failed or reached end.`);
+                                break;
+                            }
+                            crawlerLog.info(`Fetched ${nextData.hits.length} products from API at offset ${offset}`);
                             const mappedNext = nextData.hits.map(mapSearchHit).filter(Boolean);
                             await enqueueOrSaveDetails(mappedNext, crawlerLog);
                         }
