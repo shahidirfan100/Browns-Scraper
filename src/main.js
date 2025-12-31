@@ -29,6 +29,20 @@ const toAbs = (href) => {
     }
 };
 
+const normalizeProductUrl = (href) => {
+    if (!href) return null;
+    try {
+        const url = new URL(href, BASE_URL);
+        if (url.pathname.includes('/product/')) {
+            url.search = '';
+            url.hash = '';
+        }
+        return url.href;
+    } catch {
+        return null;
+    }
+};
+
 const toNumber = (value) => {
     if (value === null || value === undefined || value === '') return null;
     const num = Number(String(value).replace(/[^\d.]/g, ''));
@@ -354,7 +368,7 @@ const mapSearchHit = (hit) => {
         price,
         originalPrice,
         currency: hit.currency || 'CAD',
-        url: productUrl ? toAbs(productUrl) : null,
+        url: productUrl ? normalizeProductUrl(productUrl) : null,
         image: image ? toAbs(image) : null,
         images: images.map((link) => toAbs(link)),
         colors,
@@ -405,7 +419,7 @@ const extractJsonLdProducts = ($) => {
             price: toNumber(offers?.price),
             originalPrice: null,
             currency: offers?.priceCurrency || 'CAD',
-            url: product.url ? toAbs(product.url) : null,
+            url: product.url ? normalizeProductUrl(product.url) : null,
             image: Array.isArray(product.image) ? toAbs(product.image[0]) : toAbs(product.image),
             images: Array.isArray(product.image) ? product.image.map((img) => toAbs(img)) : [],
             colors: [],
@@ -433,7 +447,7 @@ const extractProductsFromHtml = ($) => {
     $('[data-segment]').each((_, el) => {
         const data = parseJsonAttribute($(el).attr('data-segment'));
         if (!data || typeof data !== 'object') return;
-        const url = data.url ? toAbs(data.url) : null;
+        const url = data.url ? normalizeProductUrl(data.url) : null;
         const image = data.image_url ? toAbs(data.image_url) : null;
         const colors = data.variant ? [String(data.variant)] : [];
         const sizes = data.size ? [String(data.size)] : [];
@@ -474,7 +488,7 @@ const extractProductsFromHtml = ($) => {
         const impression = gtm?.ecommerce?.impressions || null;
 
         const link = tile.find('a[href*="/product/"]').first();
-        const url = segment?.url ? toAbs(segment.url) : link.length ? toAbs(link.attr('href')) : null;
+        const url = segment?.url ? normalizeProductUrl(segment.url) : link.length ? normalizeProductUrl(link.attr('href')) : null;
         const img = tile.find('img').first();
         const image = segment?.image_url ? segment.image_url : img.length ? getImageFromTag(img) : null;
 
@@ -513,7 +527,7 @@ const extractProductsFromHtml = ($) => {
 
     $('a[href*="/product/"]').each((_, el) => {
         const href = $(el).attr('href');
-        const url = href ? toAbs(href) : null;
+        const url = href ? normalizeProductUrl(href) : null;
         if (!url || seenKeys.has(url)) return;
 
         const title = $(el).attr('aria-label') || $(el).find('img').attr('alt') || null;
@@ -695,7 +709,7 @@ try {
             price: item.price !== undefined ? item.price : null,
             originalPrice: item.originalPrice !== undefined ? item.originalPrice : null,
             currency: item.currency || 'CAD',
-            url: item.url || null,
+            url: item.url ? normalizeProductUrl(item.url) : null,
             image: item.image || null,
             images: Array.isArray(item.images) ? item.images : [],
             colors: Array.isArray(item.colors) ? item.colors : [],
@@ -717,8 +731,8 @@ try {
             const item = normalizeItem(raw);
             if (!item) continue;
 
-            // Listing mode requires URL to be useful and stable for deduplication.
-            if (!item.url) continue;
+            // Listing mode requires a canonical URL and a visible title.
+            if (!item.url || !item.title) continue;
 
             // Deduplicate primarily by URL (product IDs can differ across tracking/variants).
             if (seenKeys.has(item.url)) continue;
