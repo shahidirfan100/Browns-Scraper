@@ -15,6 +15,11 @@ const headerGenerator = new HeaderGenerator({
     operatingSystems: ['windows', 'macos', 'linux'],
 });
 
+const proxyState = {
+    disabled: false,
+    reason: null,
+};
+
 const toAbs = (href) => {
     try {
         return new URL(href, BASE_URL).href;
@@ -37,6 +42,33 @@ const getSessionHeaders = (session) => {
         session.userData.headers = headerGenerator.getHeaders();
     }
     return session.userData.headers;
+};
+
+const isProxyAuthError = (message) => {
+    if (!message) return false;
+    const text = message.toString();
+    return (
+        text.includes('UPSTREAM407') ||
+        text.includes('Proxy responded with 597') ||
+        /proxy/i.test(text) && /407|597/.test(text)
+    );
+};
+
+const disableProxy = (reason, logger) => {
+    if (proxyState.disabled) return;
+    proxyState.disabled = true;
+    proxyState.reason = reason || 'Proxy authentication failed';
+    logger?.warning?.(`Proxy disabled for this run: ${proxyState.reason}`);
+};
+
+const resolveProxyUrl = async ({ proxyConfiguration, session, request, logger }) => {
+    if (!proxyConfiguration || proxyState.disabled || request?.userData?.noProxy) return undefined;
+    try {
+        return await proxyConfiguration.newUrl(session?.id);
+    } catch (err) {
+        disableProxy(`Proxy configuration error: ${err?.message || err}`, logger);
+        return undefined;
+    }
 };
 
 const extractJsonObject = (text, startIndex) => {
@@ -181,9 +213,9 @@ const buildApiEndpoints = ({ shortCode, organizationId }) => {
     ];
 };
 
-const fetchJson = async ({ url, session, proxyConfiguration, logger }) => {
+const fetchJson = async ({ url, session, proxyConfiguration, logger, request }) => {
     try {
-        const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl(session?.id) : undefined;
+        const proxyUrl = await resolveProxyUrl({ proxyConfiguration, session, request, logger });
         const response = await gotScraping({
             url,
             proxyUrl,
@@ -205,7 +237,11 @@ const fetchJson = async ({ url, session, proxyConfiguration, logger }) => {
         logger?.debug?.(`JSON request failed (${response.statusCode}) ${url}`);
         return null;
     } catch (err) {
-        logger?.debug?.(`JSON request error: ${err.message}`);
+        const message = err?.message || String(err);
+        if (isProxyAuthError(message)) {
+            disableProxy('Proxy authentication failed', logger);
+        }
+        logger?.debug?.(`JSON request error: ${message}`);
         return null;
     }
 };
@@ -386,9 +422,10 @@ const fetchSitemapUrls = async ({ proxyConfiguration, session, logger }) => {
     ];
 
     for (const candidate of candidates) {
+        const proxyUrl = await resolveProxyUrl({ proxyConfiguration, session, logger });
         const response = await gotScraping({
             url: candidate,
-            proxyUrl: proxyConfiguration ? await proxyConfiguration.newUrl(session?.id) : undefined,
+            proxyUrl,
             responseType: 'text',
             throwHttpErrors: false,
             timeout: { request: 30000 },
@@ -409,9 +446,10 @@ const fetchSitemapUrls = async ({ proxyConfiguration, session, logger }) => {
         if (sitemapUrls.length) {
             const nestedUrls = [];
             for (const sitemapUrl of sitemapUrls.slice(0, 10)) {
+                const nestedProxyUrl = await resolveProxyUrl({ proxyConfiguration, session, logger });
                 const nested = await gotScraping({
                     url: sitemapUrl,
-                    proxyUrl: proxyConfiguration ? await proxyConfiguration.newUrl(session?.id) : undefined,
+                    proxyUrl: nestedProxyUrl,
                     responseType: 'text',
                     throwHttpErrors: false,
                     timeout: { request: 30000 },
@@ -479,9 +517,15 @@ try {
         return [url.href];
     };
 
-    const proxyConfiguration = input.proxyConfiguration
-        ? await Actor.createProxyConfiguration(input.proxyConfiguration)
-        : undefined;
+    let proxyConfiguration;
+    if (input.proxyConfiguration) {
+        try {
+            proxyConfiguration = await Actor.createProxyConfiguration(input.proxyConfiguration);
+        } catch (err) {
+            log.warning(`Invalid proxy configuration, running without proxy. ${err?.message || err}`);
+            proxyConfiguration = undefined;
+        }
+    }
 
     const requestQueue = await Actor.openRequestQueue();
 
@@ -549,7 +593,7 @@ try {
         }
     };
 
-    const tryProductSearchApi = async ({ bootstrap, offset, limit, session, logger }) => {
+    const tryProductSearchApi = async ({ bootstrap, offset, limit, session, logger, request }) => {
         const apiParams = {
             siteId: bootstrap.siteId,
             clientId: bootstrap.clientId,
@@ -574,7 +618,7 @@ try {
             });
             const url = `${base}?${params.toString()}`;
             logger?.debug?.(`Attempting JSON API: ${url}`);
-            const data = await fetchJson({ url, session, proxyConfiguration, logger });
+            const data = await fetchJson({ url, session, proxyConfiguration, logger, request });
             if (data && Array.isArray(data.hits)) return data;
         }
 
@@ -604,7 +648,6 @@ try {
 
     const crawler = new CheerioCrawler({
         requestQueue,
-        proxyConfiguration,
         useSessionPool: true,
         sessionPoolOptions: {
             maxPoolSize: 50,
@@ -614,15 +657,30 @@ try {
         minConcurrency: 1,
         requestHandlerTimeoutSecs: 120,
         preNavigationHooks: [
-            async ({ request, session }) => {
+            async ({ request, session, log: hookLog }) => {
                 request.headers = {
                     ...getSessionHeaders(session),
                     ...request.headers,
                 };
+                const proxyUrl = await resolveProxyUrl({
+                    proxyConfiguration,
+                    session,
+                    request,
+                    logger: hookLog,
+                });
+                if (proxyUrl) {
+                    request.proxyUrl = proxyUrl;
+                } else {
+                    request.proxyUrl = undefined;
+                }
             },
         ],
         async requestHandler({ request, response, $, session, log: crawlerLog }) {
             if (response && [403, 407, 429, 597].includes(response.statusCode)) {
+                if ([407, 597].includes(response.statusCode)) {
+                    disableProxy(`Proxy authentication failed (${response.statusCode})`, crawlerLog);
+                    request.userData.noProxy = true;
+                }
                 session?.markBad();
                 crawlerLog.warning(`Blocked (${response.statusCode}) ${request.url}`);
                 return;
@@ -660,6 +718,7 @@ try {
                     limit: pageSize,
                     session,
                     logger: crawlerLog,
+                    request,
                 });
 
                 if (apiData?.hits?.length) {
@@ -682,6 +741,7 @@ try {
                             limit,
                             session,
                             logger: crawlerLog,
+                            request,
                         });
 
                         if (!nextData?.hits?.length) break;
@@ -725,7 +785,11 @@ try {
         },
         errorHandler({ request, log: crawlerLog }, error) {
             const message = error?.message || String(error);
-            if (message.includes('UPSTREAM407') || message.includes('Proxy')) {
+            const errorMessages = Array.isArray(request?.errorMessages) ? request.errorMessages.join(' ') : '';
+            const combined = `${message} ${errorMessages}`;
+            if (isProxyAuthError(combined)) {
+                disableProxy('Proxy authentication failed', crawlerLog);
+                request.userData.noProxy = true;
                 crawlerLog.warning(
                     `Proxy authentication failed. Disable Apify Proxy or use an allowed proxy group. (${request.url})`
                 );
@@ -735,7 +799,10 @@ try {
         },
         failedRequestHandler({ request, log: crawlerLog }, error) {
             const message = error?.message || String(error);
-            if (message.includes('UPSTREAM407') || message.includes('Proxy')) {
+            const errorMessages = Array.isArray(request?.errorMessages) ? request.errorMessages.join(' ') : '';
+            const combined = `${message} ${errorMessages}`;
+            if (isProxyAuthError(combined)) {
+                disableProxy('Proxy authentication failed', crawlerLog);
                 crawlerLog.error(
                     `Proxy authentication failed. Disable Apify Proxy or use an allowed proxy group. (${request.url})`
                 );
