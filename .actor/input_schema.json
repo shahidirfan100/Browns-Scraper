@@ -30,39 +30,13 @@
       "description": "Filter products by brand (e.g., 'UGG', 'Adidas', 'New Balance').",
       "editor": "textfield"
     },
-    "minPrice": {
-      "title": "Minimum Price",
-      "type": "integer",
-      "description": "Filter products with price greater than or equal to this value (CAD).",
-      "editor": "number",
-      "minimum": 0
-    },
-    "maxPrice": {
-      "title": "Maximum Price",
-      "type": "integer",
-      "description": "Filter products with price less than or equal to this value (CAD).",
-      "editor": "number",
-      "minimum": 0
-    },
-    "color": {
-      "title": "Color Filter",
-      "type": "string",
-      "description": "Filter products by color.",
-      "editor": "textfield"
-    },
-    "size": {
-      "title": "Size Filter",
-      "type": "string",
-      "description": "Filter products by size.",
-      "editor": "textfield"
-    },
     "maxItems": {
       "title": "Maximum Products",
       "type": "integer",
       "description": "Maximum number of products to scrape.",
       "minimum": 1,
-      "default": 100,
-      "prefill": 100,
+      "default": 20,
+      "prefill": 20,
       "editor": "number"
     },
     "maxPages": {
