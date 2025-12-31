@@ -18,6 +18,7 @@ const headerGenerator = new HeaderGenerator({
 const proxyState = {
     disabled: false,
     reason: null,
+    authFailed: false,
 };
 
 const toAbs = (href) => {
@@ -61,8 +62,8 @@ const disableProxy = (reason, logger) => {
     logger?.warning?.(`Proxy disabled for this run: ${proxyState.reason}`);
 };
 
-const resolveProxyUrl = async ({ proxyConfiguration, session, request, logger }) => {
-    if (!proxyConfiguration || proxyState.disabled || request?.userData?.noProxy) return undefined;
+const resolveProxyUrl = async ({ proxyConfiguration, session, logger }) => {
+    if (!proxyConfiguration || proxyState.disabled) return undefined;
     try {
         return await proxyConfiguration.newUrl(session?.id);
     } catch (err) {
@@ -213,9 +214,9 @@ const buildApiEndpoints = ({ shortCode, organizationId }) => {
     ];
 };
 
-const fetchJson = async ({ url, session, proxyConfiguration, logger, request }) => {
+const fetchJson = async ({ url, session, proxyConfiguration, logger }) => {
     try {
-        const proxyUrl = await resolveProxyUrl({ proxyConfiguration, session, request, logger });
+        const proxyUrl = await resolveProxyUrl({ proxyConfiguration, session, logger });
         const response = await gotScraping({
             url,
             proxyUrl,
@@ -239,6 +240,7 @@ const fetchJson = async ({ url, session, proxyConfiguration, logger, request }) 
     } catch (err) {
         const message = err?.message || String(err);
         if (isProxyAuthError(message)) {
+            proxyState.authFailed = true;
             disableProxy('Proxy authentication failed', logger);
         }
         logger?.debug?.(`JSON request error: ${message}`);
@@ -276,6 +278,19 @@ const mapSearchHit = (hit) => {
     const originalPrice = priceMax && price && priceMax > price ? priceMax : null;
 
     const productUrl = hit.c_productUrl || hit.productUrl || hit.url || hit.link;
+    const represented = hit.representedProduct || {};
+    const images = Array.isArray(hit.imageGroups)
+        ? uniqStrings(
+              hit.imageGroups
+                  .flatMap((group) => group?.images || [])
+                  .map((img) => img?.link || img?.src)
+                  .filter(Boolean)
+          )
+        : [];
+    const categories = uniqStrings([
+        ...(Array.isArray(hit.c_productCategories) ? hit.c_productCategories : []),
+        ...(Array.isArray(represented.c_primaryCategories) ? represented.c_primaryCategories : []),
+    ]);
 
     return {
         title: hit.productName || hit.name || null,
@@ -285,10 +300,18 @@ const mapSearchHit = (hit) => {
         currency: hit.currency || 'CAD',
         url: productUrl ? toAbs(productUrl) : null,
         image: image ? toAbs(image) : null,
+        images: images.map((link) => toAbs(link)),
         colors,
         sizes,
         inStock: hit.orderable ?? (hit.representedProduct?.c_qtyInStock > 0),
         productId: hit.productId || hit.representedProduct?.id || null,
+        description: represented.c_productDescription || null,
+        features: Array.isArray(represented.c_productFeatures) ? represented.c_productFeatures : [],
+        attributes: Array.isArray(represented.c_productAttributesDisplay) ? represented.c_productAttributesDisplay : [],
+        categories,
+        gender: Array.isArray(represented.c_gender) ? represented.c_gender : [],
+        materials: Array.isArray(represented.c_material) ? represented.c_material : [],
+        colorName: represented.c_colorname || null,
     };
 };
 
@@ -328,10 +351,12 @@ const extractJsonLdProducts = ($) => {
             currency: offers?.priceCurrency || 'CAD',
             url: product.url ? toAbs(product.url) : null,
             image: Array.isArray(product.image) ? toAbs(product.image[0]) : toAbs(product.image),
+            images: Array.isArray(product.image) ? product.image.map((img) => toAbs(img)) : [],
             colors: [],
             sizes: [],
             inStock: String(offers?.availability || '').toLowerCase().includes('instock'),
             productId: product.sku || null,
+            description: product.description || null,
         };
     });
 };
@@ -527,7 +552,7 @@ try {
         }
     }
 
-    const requestQueue = await Actor.openRequestQueue();
+    let requestQueue = await Actor.openRequestQueue();
 
     let itemsSaved = 0;
     let anyItems = false;
@@ -593,7 +618,7 @@ try {
         }
     };
 
-    const tryProductSearchApi = async ({ bootstrap, offset, limit, session, logger, request }) => {
+    const tryProductSearchApi = async ({ bootstrap, offset, limit, session, logger }) => {
         const apiParams = {
             siteId: bootstrap.siteId,
             clientId: bootstrap.clientId,
@@ -618,7 +643,7 @@ try {
             });
             const url = `${base}?${params.toString()}`;
             logger?.debug?.(`Attempting JSON API: ${url}`);
-            const data = await fetchJson({ url, session, proxyConfiguration, logger, request });
+            const data = await fetchJson({ url, session, proxyConfiguration, logger });
             if (data && Array.isArray(data.hits)) return data;
         }
 
@@ -646,184 +671,188 @@ try {
         logger.info(`Queued ${productUrls.length} product URLs from sitemap`);
     };
 
-    const crawler = new CheerioCrawler({
-        requestQueue,
-        useSessionPool: true,
-        sessionPoolOptions: {
-            maxPoolSize: 50,
-            sessionOptions: { maxUsageCount: 50 },
-        },
-        maxConcurrency: 10,
-        minConcurrency: 1,
-        requestHandlerTimeoutSecs: 120,
-        preNavigationHooks: [
-            async ({ request, session, log: hookLog }) => {
-                request.headers = {
-                    ...getSessionHeaders(session),
-                    ...request.headers,
-                };
-                const proxyUrl = await resolveProxyUrl({
-                    proxyConfiguration,
-                    session,
-                    request,
-                    logger: hookLog,
-                });
-                if (proxyUrl) {
-                    request.proxyUrl = proxyUrl;
-                } else {
-                    request.proxyUrl = undefined;
-                }
+    const runCrawler = async () => {
+        const crawler = new CheerioCrawler({
+            requestQueue,
+            proxyConfiguration,
+            useSessionPool: true,
+            sessionPoolOptions: {
+                maxPoolSize: 50,
+                sessionOptions: { maxUsageCount: 50 },
             },
-        ],
-        async requestHandler({ request, response, $, session, log: crawlerLog }) {
-            if (response && [403, 407, 429, 597].includes(response.statusCode)) {
-                if ([407, 597].includes(response.statusCode)) {
-                    disableProxy(`Proxy authentication failed (${response.statusCode})`, crawlerLog);
-                    request.userData.noProxy = true;
-                }
-                session?.markBad();
-                crawlerLog.warning(`Blocked (${response.statusCode}) ${request.url}`);
-                return;
-            }
-
-            if (itemsSaved >= MAX_ITEMS) {
-                crawlerLog.info(`Reached max items limit (${MAX_ITEMS})`);
-                return;
-            }
-
-            if (request.userData?.label === 'PRODUCT') {
-                const products = extractJsonLdProducts($);
-                if (products.length) {
-                    await saveItems(products, crawlerLog);
+            maxConcurrency: 10,
+            minConcurrency: 1,
+            requestHandlerTimeoutSecs: 120,
+            preNavigationHooks: [
+                async ({ request, session }) => {
+                    request.headers = {
+                        ...getSessionHeaders(session),
+                        ...request.headers,
+                    };
+                },
+            ],
+            async requestHandler({ request, response, $, session, log: crawlerLog }) {
+                if (response && [403, 407, 429, 597].includes(response.statusCode)) {
+                    if ([407, 597].includes(response.statusCode)) {
+                        proxyState.authFailed = true;
+                        disableProxy(`Proxy authentication failed (${response.statusCode})`, crawlerLog);
+                    }
+                    session?.markBad();
+                    crawlerLog.warning(`Blocked (${response.statusCode}) ${request.url}`);
                     return;
                 }
-                const htmlProducts = extractProductsFromHtml($);
-                await saveItems(htmlProducts, crawlerLog);
-                return;
-            }
 
-            const html = $.root().html() || '';
-            const bootstrap = extractBootstrapConfig(html);
+                if (itemsSaved >= MAX_ITEMS) {
+                    crawlerLog.info(`Reached max items limit (${MAX_ITEMS})`);
+                    return;
+                }
 
-            const pageSize = bootstrap.productSearch?.limit || DEFAULT_PAGE_SIZE;
-            const startOffset = request.userData?.offset ?? bootstrap.productSearch?.offset ?? 0;
-            const startPage = request.userData?.pageNum ?? 1;
+                if (request.userData?.label === 'PRODUCT') {
+                    const products = extractJsonLdProducts($);
+                    if (products.length) {
+                        await saveItems(products, crawlerLog);
+                        return;
+                    }
+                    const htmlProducts = extractProductsFromHtml($);
+                    await saveItems(htmlProducts, crawlerLog);
+                    return;
+                }
 
-            let usedApi = false;
+                const html = $.root().html() || '';
+                const bootstrap = extractBootstrapConfig(html);
 
-            if (bootstrap.shortCode && bootstrap.clientId && bootstrap.organizationId && bootstrap.siteId) {
-                const apiData = await tryProductSearchApi({
-                    bootstrap,
-                    offset: startOffset,
-                    limit: pageSize,
-                    session,
-                    logger: crawlerLog,
-                    request,
-                });
+                const pageSize = bootstrap.productSearch?.limit || DEFAULT_PAGE_SIZE;
+                const startOffset = request.userData?.offset ?? bootstrap.productSearch?.offset ?? 0;
+                const startPage = request.userData?.pageNum ?? 1;
 
-                if (apiData?.hits?.length) {
-                    usedApi = true;
-                    await saveItems(apiData.hits.map(mapSearchHit).filter(Boolean), crawlerLog);
+                let usedApi = false;
 
-                    const total = Number.isFinite(apiData.total) ? apiData.total : null;
-                    let offset = Number.isFinite(apiData.offset) ? apiData.offset : startOffset;
-                    let limit = Number.isFinite(apiData.limit) ? apiData.limit : pageSize;
-                    let pageNum = startPage;
+                if (bootstrap.shortCode && bootstrap.clientId && bootstrap.organizationId && bootstrap.siteId) {
+                    const apiData = await tryProductSearchApi({
+                        bootstrap,
+                        offset: startOffset,
+                        limit: pageSize,
+                        session,
+                        logger: crawlerLog,
+                    });
 
-                    while (itemsSaved < MAX_ITEMS && pageNum < MAX_PAGES) {
-                        if (total !== null && offset + limit >= total) break;
-                        offset += limit;
-                        pageNum += 1;
+                    if (apiData?.hits?.length) {
+                        usedApi = true;
+                        await saveItems(apiData.hits.map(mapSearchHit).filter(Boolean), crawlerLog);
 
-                        const nextData = await tryProductSearchApi({
-                            bootstrap,
-                            offset,
-                            limit,
-                            session,
-                            logger: crawlerLog,
-                            request,
-                        });
+                        const total = Number.isFinite(apiData.total) ? apiData.total : null;
+                        let offset = Number.isFinite(apiData.offset) ? apiData.offset : startOffset;
+                        let limit = Number.isFinite(apiData.limit) ? apiData.limit : pageSize;
+                        let pageNum = startPage;
 
-                        if (!nextData?.hits?.length) break;
-                        await saveItems(nextData.hits.map(mapSearchHit).filter(Boolean), crawlerLog);
+                        while (itemsSaved < MAX_ITEMS && pageNum < MAX_PAGES) {
+                            if (total !== null && offset + limit >= total) break;
+                            offset += limit;
+                            pageNum += 1;
+
+                            const nextData = await tryProductSearchApi({
+                                bootstrap,
+                                offset,
+                                limit,
+                                session,
+                                logger: crawlerLog,
+                            });
+
+                            if (!nextData?.hits?.length) break;
+                            await saveItems(nextData.hits.map(mapSearchHit).filter(Boolean), crawlerLog);
+                        }
                     }
                 }
-            }
 
-            if (!usedApi && bootstrap.productSearch?.hits?.length) {
-                crawlerLog.info('Using preloaded product-search data');
-                await saveItems(bootstrap.productSearch.hits.map(mapSearchHit).filter(Boolean), crawlerLog);
-            }
-
-            if (!usedApi && itemsSaved < MAX_ITEMS) {
-                const jsonLdProducts = extractJsonLdProducts($);
-                if (jsonLdProducts.length) {
-                    crawlerLog.info('Using JSON-LD products');
-                    await saveItems(jsonLdProducts, crawlerLog);
+                if (!usedApi && bootstrap.productSearch?.hits?.length) {
+                    crawlerLog.info('Using preloaded product-search data');
+                    await saveItems(bootstrap.productSearch.hits.map(mapSearchHit).filter(Boolean), crawlerLog);
                 }
-            }
 
-            if (!usedApi && itemsSaved < MAX_ITEMS) {
-                const htmlProducts = extractProductsFromHtml($);
-                if (htmlProducts.length) {
-                    crawlerLog.info('Using HTML product tiles');
-                    await saveItems(htmlProducts, crawlerLog);
+                if (!usedApi && itemsSaved < MAX_ITEMS) {
+                    const jsonLdProducts = extractJsonLdProducts($);
+                    if (jsonLdProducts.length) {
+                        crawlerLog.info('Using JSON-LD products');
+                        await saveItems(jsonLdProducts, crawlerLog);
+                    }
                 }
-            }
 
-            if (!usedApi && itemsSaved < MAX_ITEMS && startPage < MAX_PAGES) {
-                const nextUrl = findNextPage($, request.url, pageSize);
-                if (nextUrl) {
-                    await requestQueue.addRequest({
-                        url: nextUrl,
-                        userData: { label: 'LIST', pageNum: startPage + 1 },
-                    });
-                } else if (!anyItems) {
-                    await enqueueSitemapFallback(session, crawlerLog);
+                if (!usedApi && itemsSaved < MAX_ITEMS) {
+                    const htmlProducts = extractProductsFromHtml($);
+                    if (htmlProducts.length) {
+                        crawlerLog.info('Using HTML product tiles');
+                        await saveItems(htmlProducts, crawlerLog);
+                    }
                 }
-            }
-        },
-        errorHandler({ request, log: crawlerLog }, error) {
-            const message = error?.message || String(error);
-            const errorMessages = Array.isArray(request?.errorMessages) ? request.errorMessages.join(' ') : '';
-            const combined = `${message} ${errorMessages}`;
-            if (isProxyAuthError(combined)) {
-                disableProxy('Proxy authentication failed', crawlerLog);
-                request.userData.noProxy = true;
-                crawlerLog.warning(
-                    `Proxy authentication failed. Disable Apify Proxy or use an allowed proxy group. (${request.url})`
-                );
-            } else {
-                crawlerLog.warning(`Request failed (retrying) ${request.url}: ${message}`);
-            }
-        },
-        failedRequestHandler({ request, log: crawlerLog }, error) {
-            const message = error?.message || String(error);
-            const errorMessages = Array.isArray(request?.errorMessages) ? request.errorMessages.join(' ') : '';
-            const combined = `${message} ${errorMessages}`;
-            if (isProxyAuthError(combined)) {
-                disableProxy('Proxy authentication failed', crawlerLog);
-                crawlerLog.error(
-                    `Proxy authentication failed. Disable Apify Proxy or use an allowed proxy group. (${request.url})`
-                );
-            } else {
-                crawlerLog.error(`Request failed ${request.url}: ${message}`);
-            }
-        },
-    });
 
-    const initialUrls = buildStartUrls();
-    if (!initialUrls.length) {
-        log.error('No start URLs provided or generated.');
-    } else {
+                if (!usedApi && itemsSaved < MAX_ITEMS && startPage < MAX_PAGES) {
+                    const nextUrl = findNextPage($, request.url, pageSize);
+                    if (nextUrl) {
+                        await requestQueue.addRequest({
+                            url: nextUrl,
+                            userData: { label: 'LIST', pageNum: startPage + 1 },
+                        });
+                    } else if (!anyItems) {
+                        await enqueueSitemapFallback(session, crawlerLog);
+                    }
+                }
+            },
+            errorHandler({ request, log: crawlerLog }, error) {
+                const message = error?.message || String(error);
+                const errorMessages = Array.isArray(request?.errorMessages) ? request.errorMessages.join(' ') : '';
+                const combined = `${message} ${errorMessages}`;
+                if (isProxyAuthError(combined)) {
+                    proxyState.authFailed = true;
+                    disableProxy('Proxy authentication failed', crawlerLog);
+                    crawlerLog.warning(
+                        `Proxy authentication failed. Disable Apify Proxy or use an allowed proxy group. (${request.url})`
+                    );
+                } else {
+                    crawlerLog.warning(`Request failed (retrying) ${request.url}: ${message}`);
+                }
+            },
+            failedRequestHandler({ request, log: crawlerLog }, error) {
+                const message = error?.message || String(error);
+                const errorMessages = Array.isArray(request?.errorMessages) ? request.errorMessages.join(' ') : '';
+                const combined = `${message} ${errorMessages}`;
+                if (isProxyAuthError(combined)) {
+                    proxyState.authFailed = true;
+                    disableProxy('Proxy authentication failed', crawlerLog);
+                    crawlerLog.error(
+                        `Proxy authentication failed. Disable Apify Proxy or use an allowed proxy group. (${request.url})`
+                    );
+                } else {
+                    crawlerLog.error(`Request failed ${request.url}: ${message}`);
+                }
+            },
+        });
+
+        const initialUrls = buildStartUrls();
+        if (!initialUrls.length) {
+            log.error('No start URLs provided or generated.');
+            return;
+        }
+
         for (const url of initialUrls) {
             await requestQueue.addRequest({ url, userData: { label: 'LIST', pageNum: 1 } });
         }
 
         log.info(`Starting crawl with ${initialUrls.length} URL(s)`);
         await crawler.run();
-        log.info(`Scraping completed. Total products saved: ${itemsSaved}`);
+    };
+
+    await runCrawler();
+
+    if (proxyConfiguration && proxyState.authFailed) {
+        log.warning('Proxy authentication failed. Retrying without proxy.');
+        proxyState.authFailed = false;
+        proxyState.disabled = true;
+        proxyConfiguration = undefined;
+        requestQueue = await Actor.openRequestQueue(`direct-${Date.now()}`);
+        await runCrawler();
     }
+
+    log.info(`Scraping completed. Total products saved: ${itemsSaved}`);
 } catch (err) {
     log.exception(err, 'Fatal error');
     throw err;
