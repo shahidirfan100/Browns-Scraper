@@ -429,27 +429,62 @@ const extractProductsFromHtml = ($) => {
         products.push(item);
     };
 
-    $('[data-segment]').each((_, el) => {
-        const data = parseJsonAttribute($(el).attr('data-segment'));
-        if (!data || typeof data !== 'object') return;
-        const url = data.url ? toAbs(data.url) : null;
-        const image = data.image_url ? toAbs(data.image_url) : null;
-        const colors = data.variant ? [String(data.variant)] : [];
-        const sizes = data.size ? [String(data.size)] : [];
-        pushProduct({
-            title: data.name || null,
-            brand: data.brand || null,
-            price: toNumber(data.price),
-            originalPrice: toNumber(data.retail_price),
-            currency: data.currency || 'CAD',
-            url,
-            image,
-            images: image ? [image] : [],
-            colors,
-            sizes,
-            inStock: true,
-            productId: data.product_id || data.stylenumber || data.sku || null,
-        });
+    const getImageFromTag = (img) => {
+        let src =
+            img.attr('data-src') ||
+            img.attr('data-lazy') ||
+            img.attr('src') ||
+            null;
+        const srcset = img.attr('data-srcset') || img.attr('srcset');
+        if (!src && srcset) {
+            src = srcset.split(',')[0]?.trim().split(' ')[0] || null;
+        }
+        return src;
+    };
+
+    $('.product-tile').each((_, el) => {
+        const tile = $(el);
+        const segmentEl = tile.find('[data-segment]').first();
+        const segment = parseJsonAttribute(segmentEl.attr('data-segment')) || null;
+        const gtm = parseJsonAttribute(tile.attr('data-gtm')) || null;
+        const impression = gtm?.ecommerce?.impressions || null;
+
+        const link = tile.find('a[href*="/product/"]').first();
+        const url = link.length ? toAbs(link.attr('href')) : null;
+        const img = tile.find('img').first();
+        const image = img.length ? getImageFromTag(img) : null;
+
+        const title =
+            segment?.name ||
+            impression?.name ||
+            impression?.dimension1 ||
+            link.attr('aria-label') ||
+            img.attr('alt') ||
+            null;
+        const brand = segment?.brand || impression?.brand || impression?.dimension6 || null;
+        const price = toNumber(segment?.price ?? impression?.price ?? impression?.dimension12 ?? impression?.dimension7);
+        const originalPrice = toNumber(segment?.retail_price ?? impression?.dimension11);
+        const colors = segment?.variant ? [String(segment.variant)] : impression?.variant ? [String(impression.variant)] : [];
+        const sizes = segment?.size ? [String(segment.size)] : [];
+        const productId = segment?.product_id || impression?.id || impression?.dimension9 || null;
+        const currency = segment?.currency || gtm?.ecommerce?.currencyCode || 'CAD';
+
+        if (url || productId) {
+            pushProduct({
+                title: title ? String(title).trim() : null,
+                brand,
+                price,
+                originalPrice,
+                currency,
+                url,
+                image: image ? toAbs(image) : null,
+                images: image ? [toAbs(image)] : [],
+                colors,
+                sizes,
+                inStock: true,
+                productId,
+            });
+        }
     });
 
     $('a[href*="/product/"]').each((_, el) => {
@@ -462,7 +497,7 @@ const extractProductsFromHtml = ($) => {
         const priceText =
             card.find('[class*="price"], [data-testid*="price"], [class*="Price"]').first().text() || '';
         const price = toNumber(priceText);
-        const image = $(el).find('img').attr('src') || $(el).find('img').attr('data-src') || null;
+        const image = $(el).find('img').attr('data-src') || $(el).find('img').attr('src') || null;
 
         pushProduct({
             title: title ? title.trim() : null,
