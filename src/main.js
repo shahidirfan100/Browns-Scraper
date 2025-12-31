@@ -554,10 +554,11 @@ try {
 
     let requestQueue = await Actor.openRequestQueue();
 
-    let itemsSaved = 0;
-    let anyItems = false;
-    let sitemapQueued = false;
-    const seenKeys = new Set();
+let itemsSaved = 0;
+let anyItems = false;
+let sitemapQueued = false;
+const seenKeys = new Set();
+const detailQueued = new Set();
 
     const passesFilters = (item) => {
         if (!item) return false;
@@ -592,9 +593,9 @@ try {
         };
     };
 
-    const saveItems = async (items, logger) => {
-        if (!Array.isArray(items) || !items.length) return;
-        if (itemsSaved >= MAX_ITEMS) return;
+const saveItems = async (items, logger) => {
+    if (!Array.isArray(items) || !items.length) return;
+    if (itemsSaved >= MAX_ITEMS) return;
 
         const filtered = [];
         for (const raw of items) {
@@ -615,8 +616,23 @@ try {
             itemsSaved += filtered.length;
             anyItems = true;
             logger?.info?.(`Saved ${filtered.length} items (total ${itemsSaved}/${MAX_ITEMS})`);
-        }
-    };
+    }
+};
+
+const enqueueDetailRequests = async (products, logger) => {
+    if (!products || !products.length) return;
+    for (const product of products) {
+        if (itemsSaved >= MAX_ITEMS) break;
+        const url = product?.url ? toAbs(product.url) : null;
+        if (!url || detailQueued.has(url)) continue;
+        await requestQueue.addRequest({
+            url,
+            userData: { label: 'DETAIL', base: product },
+        });
+        detailQueued.add(url);
+        logger?.debug?.(`Queued detail: ${url}`);
+    }
+};
 
     const tryProductSearchApi = async ({ bootstrap, offset, limit, session, logger }) => {
         const apiParams = {
@@ -707,14 +723,35 @@ try {
                     return;
                 }
 
-                if (request.userData?.label === 'PRODUCT') {
-                    const products = extractJsonLdProducts($);
-                    if (products.length) {
-                        await saveItems(products, crawlerLog);
-                        return;
+                if (request.userData?.label === 'DETAIL') {
+                    const base = request.userData?.base || {};
+                    const detailProducts = extractJsonLdProducts($);
+                    const detail = detailProducts.length ? detailProducts[0] : null;
+                    let merged = {
+                        ...base,
+                        ...detail,
+                        url: base.url || detail?.url || request.url,
+                        image: base.image || detail?.image || null,
+                        images: detail?.images?.length ? detail.images : base.images || [],
+                    };
+
+                    if (!detail) {
+                        const htmlProducts = extractProductsFromHtml($);
+                        const match =
+                            htmlProducts.find((p) => p.url === merged.url) ||
+                            htmlProducts.find((p) => p.title === merged.title) ||
+                            htmlProducts[0];
+                        if (match) {
+                            merged = {
+                                ...merged,
+                                ...match,
+                                url: merged.url || match.url,
+                                image: merged.image || match.image,
+                            };
+                        }
                     }
-                    const htmlProducts = extractProductsFromHtml($);
-                    await saveItems(htmlProducts, crawlerLog);
+
+                    await saveItems([merged], crawlerLog);
                     return;
                 }
 
@@ -738,7 +775,8 @@ try {
 
                     if (apiData?.hits?.length) {
                         usedApi = true;
-                        await saveItems(apiData.hits.map(mapSearchHit).filter(Boolean), crawlerLog);
+                        const mapped = apiData.hits.map(mapSearchHit).filter(Boolean);
+                        await enqueueDetailRequests(mapped, crawlerLog);
 
                         const total = Number.isFinite(apiData.total) ? apiData.total : null;
                         let offset = Number.isFinite(apiData.offset) ? apiData.offset : startOffset;
@@ -759,21 +797,23 @@ try {
                             });
 
                             if (!nextData?.hits?.length) break;
-                            await saveItems(nextData.hits.map(mapSearchHit).filter(Boolean), crawlerLog);
+                            const mappedNext = nextData.hits.map(mapSearchHit).filter(Boolean);
+                            await enqueueDetailRequests(mappedNext, crawlerLog);
                         }
                     }
                 }
 
                 if (!usedApi && bootstrap.productSearch?.hits?.length) {
                     crawlerLog.info('Using preloaded product-search data');
-                    await saveItems(bootstrap.productSearch.hits.map(mapSearchHit).filter(Boolean), crawlerLog);
+                    const mapped = bootstrap.productSearch.hits.map(mapSearchHit).filter(Boolean);
+                    await enqueueDetailRequests(mapped, crawlerLog);
                 }
 
                 if (!usedApi && itemsSaved < MAX_ITEMS) {
                     const jsonLdProducts = extractJsonLdProducts($);
                     if (jsonLdProducts.length) {
                         crawlerLog.info('Using JSON-LD products');
-                        await saveItems(jsonLdProducts, crawlerLog);
+                        await enqueueDetailRequests(jsonLdProducts, crawlerLog);
                     }
                 }
 
@@ -781,7 +821,7 @@ try {
                     const htmlProducts = extractProductsFromHtml($);
                     if (htmlProducts.length) {
                         crawlerLog.info('Using HTML product tiles');
-                        await saveItems(htmlProducts, crawlerLog);
+                        await enqueueDetailRequests(htmlProducts, crawlerLog);
                     }
                 }
 
