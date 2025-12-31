@@ -1,0 +1,59 @@
+{
+  "actorSpecification": 1,
+  "fields": {},
+  "views": {
+    "overview": {
+      "title": "Product Overview",
+      "description": "Complete product listing with pricing and availability",
+      "transformation": {
+        "fields": [
+          "image",
+          "title",
+          "brand",
+          "price",
+          "originalPrice",
+          "currency",
+          "inStock",
+          "url"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "image": {
+            "label": "Image",
+            "format": "image"
+          },
+          "title": {
+            "label": "Product Name",
+            "format": "text"
+          },
+          "brand": {
+            "label": "Brand",
+            "format": "text"
+          },
+          "price": {
+            "label": "Current Price",
+            "format": "number"
+          },
+          "originalPrice": {
+            "label": "Original Price",
+            "format": "number"
+          },
+          "currency": {
+            "label": "Currency",
+            "format": "text"
+          },
+          "inStock": {
+            "label": "In Stock",
+            "format": "boolean"
+          },
+          "url": {
+            "label": "Product URL",
+            "format": "link"
+          }
+        }
+      }
+    }
+  }
+}

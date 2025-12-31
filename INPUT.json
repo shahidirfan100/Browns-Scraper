@@ -1,0 +1,10 @@
+{
+  "category": "women",
+  "maxItems": 50,
+  "maxPages": 5,
+  "brand": "",
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"]
+  }
+}

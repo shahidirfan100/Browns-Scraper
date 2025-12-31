@@ -1,0 +1,94 @@
+{
+  "title": "Browns Shoes Scraper",
+  "description": "Extract product listings from Browns Shoes. Specify category, filters, or provide custom URLs. Uses JSON API for speed, falls back to HTML parsing when needed.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "startUrls": {
+      "title": "Start URLs",
+      "type": "array",
+      "description": "List of Browns Shoes URLs to scrape. If provided, category and filters are ignored.",
+      "editor": "requestListSources",
+      "default": [],
+      "prefill": [
+        { "url": "https://www.brownsshoes.com/en/women" }
+      ]
+    },
+    "category": {
+      "title": "Category",
+      "type": "string",
+      "description": "Product category to scrape (e.g., 'women', 'men', 'kids').",
+      "editor": "select",
+      "enum": ["women", "men", "kids", "sale"],
+      "enumTitles": ["Women", "Men", "Kids", "Sale"],
+      "default": "women",
+      "prefill": "women"
+    },
+    "brand": {
+      "title": "Brand Filter",
+      "type": "string",
+      "description": "Filter products by brand (e.g., 'UGG', 'Adidas', 'New Balance').",
+      "editor": "textfield"
+    },
+    "minPrice": {
+      "title": "Minimum Price",
+      "type": "integer",
+      "description": "Filter products with price greater than or equal to this value (CAD).",
+      "editor": "number",
+      "minimum": 0
+    },
+    "maxPrice": {
+      "title": "Maximum Price",
+      "type": "integer",
+      "description": "Filter products with price less than or equal to this value (CAD).",
+      "editor": "number",
+      "minimum": 0
+    },
+    "color": {
+      "title": "Color Filter",
+      "type": "string",
+      "description": "Filter products by color.",
+      "editor": "textfield"
+    },
+    "size": {
+      "title": "Size Filter",
+      "type": "string",
+      "description": "Filter products by size.",
+      "editor": "textfield"
+    },
+    "maxItems": {
+      "title": "Maximum Products",
+      "type": "integer",
+      "description": "Maximum number of products to scrape.",
+      "minimum": 1,
+      "default": 100,
+      "prefill": 100,
+      "editor": "number"
+    },
+    "maxPages": {
+      "title": "Maximum Pages",
+      "type": "integer",
+      "description": "Maximum number of listing pages to process.",
+      "minimum": 1,
+      "default": 50,
+      "prefill": 50,
+      "editor": "number"
+    },
+    "proxyConfiguration": {
+      "title": "Proxy Configuration",
+      "type": "object",
+      "description": "Proxy settings for anti-blocking protection. Residential proxies recommended.",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
+      },
+      "prefill": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
+      }
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
