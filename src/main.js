@@ -750,6 +750,7 @@ try {
     let maxLimitHit = false;
     let anyItems = false;
     let sitemapQueued = false;
+    let crawlerInstance;
     const seenKeys = new Set();
     const detailQueued = new Set();
     const savedProductIds = new Set();
@@ -768,6 +769,16 @@ try {
             if (!match && item.sizes.length) return false;
         }
         return true;
+    };
+
+    const stopCrawler = async (logger) => {
+        if (!maxLimitHit && itemsSaved >= MAX_ITEMS) {
+            maxLimitHit = true;
+            logger?.info?.(`Reached max items limit (${MAX_ITEMS}), stopping crawler.`);
+            if (crawlerInstance?.autoscaledPool?.isRunning()) {
+                await crawlerInstance.autoscaledPool.abort();
+            }
+        }
     };
 
     const normalizeItem = (item) => {
@@ -823,10 +834,7 @@ try {
             itemsSaved += filtered.length;
             anyItems = true;
             logger?.info?.(`Saved ${filtered.length} items (total ${itemsSaved}/${MAX_ITEMS})`);
-            if (itemsSaved >= MAX_ITEMS && !maxLimitHit) {
-                maxLimitHit = true;
-                logger?.info?.(`Reached max items limit (${MAX_ITEMS}), stopping further pagination/enqueues.`);
-            }
+            await stopCrawler(logger);
         }
     };
 
@@ -926,7 +934,7 @@ try {
     };
 
     const runCrawler = async () => {
-        const crawler = new CheerioCrawler({
+        crawlerInstance = new CheerioCrawler({
             requestQueue,
             proxyConfiguration,
             useSessionPool: true,
@@ -937,6 +945,7 @@ try {
             maxConcurrency: 10,
             minConcurrency: 1,
             requestHandlerTimeoutSecs: 120,
+            maxRequestRetries: 0,
             preNavigationHooks: [
                 async ({ request, session }) => {
                     request.headers = {
@@ -947,10 +956,7 @@ try {
             ],
             async requestHandler({ request, response, $, session, log: crawlerLog }) {
                 if (itemsSaved >= MAX_ITEMS) {
-                    if (!maxLimitHit) {
-                        maxLimitHit = true;
-                        crawlerLog.info(`Reached max items limit (${MAX_ITEMS}), skipping remaining requests.`);
-                    }
+                    await stopCrawler(crawlerLog);
                     return;
                 }
                 if (response && [403, 407, 429, 597].includes(response.statusCode)) {
@@ -1229,6 +1235,7 @@ try {
                 }
             },
             errorHandler({ request, log: crawlerLog }, error) {
+                if (itemsSaved >= MAX_ITEMS) return;
                 const message = error?.message || String(error);
                 const errorMessages = Array.isArray(request?.errorMessages) ? request.errorMessages.join(' ') : '';
                 const combined = `${message} ${errorMessages}`;
@@ -1243,6 +1250,7 @@ try {
                 }
             },
             failedRequestHandler({ request, log: crawlerLog }, error) {
+                if (itemsSaved >= MAX_ITEMS) return;
                 const message = error?.message || String(error);
                 const errorMessages = Array.isArray(request?.errorMessages) ? request.errorMessages.join(' ') : '';
                 const combined = `${message} ${errorMessages}`;
@@ -1269,7 +1277,7 @@ try {
         }
 
         log.info(`Starting crawl with ${initialUrls.length} URL(s)`);
-        await crawler.run();
+        await crawlerInstance.run();
     };
 
     await runCrawler();
