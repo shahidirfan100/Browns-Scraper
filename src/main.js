@@ -201,6 +201,21 @@ const extractProductSearchFromState = (state) => {
     return null;
 };
 
+const extractProductDetailFromState = (state) => {
+    const queries = state?.__reactQuery?.queries;
+    if (!Array.isArray(queries)) return null;
+
+    for (const query of queries) {
+        const key = query?.queryKey;
+        if (!Array.isArray(key)) continue;
+        if (!key.some((part) => String(part).includes('/products/'))) continue;
+        const data = query?.state?.data;
+        if (data && typeof data === 'object') return data;
+    }
+
+    return null;
+};
+
 const extractBootstrapConfig = (html) => {
     const shortCode = html.match(/shortCode"?:\"([^\"]+)"/)?.[1] || null;
     const clientId = html.match(/clientId"?:\"([^\"]+)"/)?.[1] || null;
@@ -393,6 +408,74 @@ const mapSearchHit = (hit) => {
         gender: Array.isArray(represented.c_gender) ? represented.c_gender : [],
         materials: Array.isArray(represented.c_material) ? represented.c_material : [],
         colorName: represented.c_colorname || null,
+    };
+};
+
+const mapDetailProduct = (product) => {
+    if (!product || typeof product !== 'object') return null;
+    const variationAttributes = product.c_variationAttributes || product.variationAttributes || [];
+    const colors = mapVariationValues(variationAttributes, ['color', 'colour']);
+    const sizes = mapVariationValues(variationAttributes, ['size']);
+    const images = Array.isArray(product.imageGroups)
+        ? uniqStrings(
+            product.imageGroups
+                .flatMap((group) => group?.images || [])
+                .map((img) => img?.link || img?.src)
+                .filter(Boolean)
+        )
+        : [];
+    const image = images[0] || product?.image?.link || product?.image?.src || null;
+    const price = toNumber(product.price ?? product.pricePerUnit ?? product.priceMin ?? product.pricePerUnitMin);
+    const priceMax = toNumber(product.priceMax ?? product.pricePerUnitMax);
+    const originalPrice = priceMax && price && priceMax > price ? priceMax : null;
+
+    const represented = product.representedProduct || product.master || {};
+    const categories = uniqStrings([
+        ...(Array.isArray(product.c_productCategories) ? product.c_productCategories : []),
+        ...(Array.isArray(product.c_primaryCategories) ? product.c_primaryCategories : []),
+        ...(Array.isArray(represented.c_primaryCategories) ? represented.c_primaryCategories : []),
+    ]);
+
+    return {
+        title: product.name || product.productName || null,
+        brand: product.brand?.name || product.brand || null,
+        price,
+        originalPrice,
+        currency: product.currency || 'CAD',
+        url: product.slugUrl || product.url || product.c_productUrl || null,
+        image: image ? toAbs(image) : null,
+        images: images.map((link) => toAbs(link)),
+        colors,
+        sizes,
+        inStock:
+            product.orderable ??
+            product.inventory?.orderable ??
+            (Number.isFinite(product.c_qtyInStock) ? product.c_qtyInStock > 0 : undefined),
+        productId: product.id || product.productId || represented.id || null,
+        description:
+            product.c_productDescription ||
+            product.longDescription ||
+            product.shortDescription ||
+            represented.c_productDescription ||
+            null,
+        features: Array.isArray(product.c_productFeatures)
+            ? product.c_productFeatures
+            : Array.isArray(represented.c_productFeatures)
+                ? represented.c_productFeatures
+                : [],
+        attributes: Array.isArray(product.c_productAttributesDisplay)
+            ? product.c_productAttributesDisplay
+            : Array.isArray(represented.c_productAttributesDisplay)
+                ? represented.c_productAttributesDisplay
+                : [],
+        categories,
+        gender: Array.isArray(product.c_gender) ? product.c_gender : Array.isArray(represented.c_gender) ? represented.c_gender : [],
+        materials: Array.isArray(product.c_material)
+            ? product.c_material
+            : Array.isArray(represented.c_material)
+                ? represented.c_material
+                : [],
+        colorName: product.c_colorname || represented.c_colorname || null,
     };
 };
 
@@ -892,12 +975,17 @@ try {
 
                 if (request.userData?.label === 'DETAIL') {
                     const base = request.userData?.base || {};
+                    const html = $.root().html() || '';
+                    const preloadedState = extractPreloadedState(html);
+                    const detailFromState = preloadedState
+                        ? mapDetailProduct(extractProductDetailFromState(preloadedState))
+                        : null;
                     const detailProducts = extractJsonLdProducts($);
-                    const detail = detailProducts.length ? detailProducts[0] : null;
+                    const detail = detailFromState || (detailProducts.length ? detailProducts[0] : null);
                     let merged = {
                         ...base,
                         ...detail,
-                        url: base.url || detail?.url || request.url,
+                        url: base.url || normalizeProductUrl(detail?.url || request.url),
                         image: base.image || detail?.image || null,
                         images: detail?.images?.length ? detail.images : base.images || [],
                     };
