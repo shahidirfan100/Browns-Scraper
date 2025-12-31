@@ -12,6 +12,6 @@
     "dataset": "./dataset_schema.json"
   },
   "meta": {
-    "generatedBy": "GPT-5"
+    "generatedBy": "GPT-5.2"
   }
 }

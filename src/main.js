@@ -423,7 +423,7 @@ const extractProductsFromHtml = ($) => {
 
     const pushProduct = (item) => {
         if (!item) return;
-        const key = item.productId || item.url;
+        const key = item.url || item.productId;
         if (!key || seenKeys.has(key)) return;
         seenKeys.add(key);
         products.push(item);
@@ -474,9 +474,9 @@ const extractProductsFromHtml = ($) => {
         const impression = gtm?.ecommerce?.impressions || null;
 
         const link = tile.find('a[href*="/product/"]').first();
-        const url = link.length ? toAbs(link.attr('href')) : null;
+        const url = segment?.url ? toAbs(segment.url) : link.length ? toAbs(link.attr('href')) : null;
         const img = tile.find('img').first();
-        const image = img.length ? getImageFromTag(img) : null;
+        const image = segment?.image_url ? segment.image_url : img.length ? getImageFromTag(img) : null;
 
         const title =
             segment?.name ||
@@ -493,7 +493,7 @@ const extractProductsFromHtml = ($) => {
         const productId = segment?.product_id || impression?.id || impression?.dimension9 || null;
         const currency = segment?.currency || gtm?.ecommerce?.currencyCode || 'CAD';
 
-        if (url || productId) {
+        if (url) {
             pushProduct({
                 title: title ? String(title).trim() : null,
                 brand,
@@ -775,9 +775,12 @@ try {
         if (!maxLimitHit && itemsSaved >= MAX_ITEMS) {
             maxLimitHit = true;
             logger?.info?.(`Reached max items limit (${MAX_ITEMS}), stopping crawler.`);
-            if (crawlerInstance?.autoscaledPool?.isRunning()) {
-                await crawlerInstance.autoscaledPool.abort();
-            }
+        }
+        if (itemsSaved < MAX_ITEMS) return;
+        try {
+            await crawlerInstance?.autoscaledPool?.abort?.();
+        } catch (err) {
+            logger?.debug?.(`Failed to abort crawler pool: ${err?.message || err}`);
         }
     };
 
@@ -811,20 +814,17 @@ try {
             const item = normalizeItem(raw);
             if (!item) continue;
 
-            // Deduplication logic - strict ID check or URL check
-            const key = item.productId || item.url;
-            if (!key) continue;
+            // Listing mode requires URL to be useful and stable for deduplication.
+            if (!item.url) continue;
 
-            // If we already saved this exact product ID, skip
-            if (item.productId && savedProductIds.has(item.productId)) continue;
-            // Fallback to URL if no ID
-            if (!item.productId && item.url && seenKeys.has(item.url)) continue;
+            // Deduplicate primarily by URL (product IDs can differ across tracking/variants).
+            if (seenKeys.has(item.url)) continue;
 
             if (!passesFilters(item)) continue;
 
             filtered.push(item);
+            seenKeys.add(item.url);
             if (item.productId) savedProductIds.add(item.productId);
-            if (item.url) seenKeys.add(item.url);
 
             if (itemsSaved + filtered.length >= MAX_ITEMS) break;
         }
@@ -945,7 +945,7 @@ try {
             maxConcurrency: 10,
             minConcurrency: 1,
             requestHandlerTimeoutSecs: 120,
-            maxRequestRetries: 0,
+            maxRequestRetries: 2,
             preNavigationHooks: [
                 async ({ request, session }) => {
                     request.headers = {
