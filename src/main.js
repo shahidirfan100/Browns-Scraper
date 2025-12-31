@@ -49,6 +49,17 @@ const toNumber = (value) => {
     return Number.isFinite(num) ? num : null;
 };
 
+const toBoolean = (value, defaultValue = false) => {
+    if (value === null || value === undefined) return defaultValue;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value === 1;
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        return ['true', '1', 'yes', 'y'].includes(normalized);
+    }
+    return defaultValue;
+};
+
 const uniqStrings = (values) => [...new Set(values.filter(Boolean))];
 
 const decodeHtmlEntities = (value) => {
@@ -619,10 +630,12 @@ try {
     const minPrice = Number.isFinite(Number(input.minPrice)) ? Number(input.minPrice) : null;
     const maxPrice = Number.isFinite(Number(input.maxPrice)) ? Number(input.maxPrice) : null;
 
-    const scrapeDetails = input.scrapeDetails === true; // Default to false
+    const scrapeDetails = toBoolean(input.scrapeDetails, false);
 
     const MAX_ITEMS = maxItems > 0 ? maxItems : DEFAULT_MAX_ITEMS;
     const MAX_PAGES = maxPages > 0 ? maxPages : DEFAULT_MAX_PAGES;
+
+    log.info(`Scrape details mode: ${scrapeDetails ? 'on' : 'off'}`);
 
     const buildStartUrls = () => {
         if (startUrlsInput.length) return startUrlsInput;
