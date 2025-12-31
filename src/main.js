@@ -281,11 +281,11 @@ const mapSearchHit = (hit) => {
     const represented = hit.representedProduct || {};
     const images = Array.isArray(hit.imageGroups)
         ? uniqStrings(
-              hit.imageGroups
-                  .flatMap((group) => group?.images || [])
-                  .map((img) => img?.link || img?.src)
-                  .filter(Boolean)
-          )
+            hit.imageGroups
+                .flatMap((group) => group?.images || [])
+                .map((img) => img?.link || img?.src)
+                .filter(Boolean)
+        )
         : [];
     const categories = uniqStrings([
         ...(Array.isArray(hit.c_productCategories) ? hit.c_productCategories : []),
@@ -512,6 +512,8 @@ try {
     const minPrice = Number.isFinite(Number(input.minPrice)) ? Number(input.minPrice) : null;
     const maxPrice = Number.isFinite(Number(input.maxPrice)) ? Number(input.maxPrice) : null;
 
+    const scrapeDetails = input.scrapeDetails !== false; // Default to true
+
     const MAX_ITEMS = maxItems > 0 ? maxItems : DEFAULT_MAX_ITEMS;
     const MAX_PAGES = maxPages > 0 ? maxPages : DEFAULT_MAX_PAGES;
 
@@ -554,11 +556,13 @@ try {
 
     let requestQueue = await Actor.openRequestQueue();
 
-let itemsSaved = 0;
-let anyItems = false;
-let sitemapQueued = false;
-const seenKeys = new Set();
-const detailQueued = new Set();
+    let itemsEnqueued = 0;
+    let itemsSaved = 0;
+    let anyItems = false;
+    let sitemapQueued = false;
+    const seenKeys = new Set();
+    const detailQueued = new Set();
+    const savedProductIds = new Set();
 
     const passesFilters = (item) => {
         if (!item) return false;
@@ -586,28 +590,41 @@ const detailQueued = new Set();
             currency: item.currency || 'CAD',
             url: item.url || null,
             image: item.image || null,
+            images: Array.isArray(item.images) ? item.images : [],
             colors: Array.isArray(item.colors) ? item.colors : [],
             sizes: Array.isArray(item.sizes) ? item.sizes : [],
             inStock: item.inStock ?? true,
             productId: item.productId || null,
+            description: item.description || null,
+            features: item.features || [],
+            materials: item.materials || [],
         };
     };
 
-const saveItems = async (items, logger) => {
-    if (!Array.isArray(items) || !items.length) return;
-    if (itemsSaved >= MAX_ITEMS) return;
+    const saveItems = async (items, logger) => {
+        if (!Array.isArray(items) || !items.length) return;
+        if (itemsSaved >= MAX_ITEMS) return;
 
         const filtered = [];
         for (const raw of items) {
             const item = normalizeItem(raw);
             if (!item) continue;
+
+            // Deduplication logic - strict ID check or URL check
             const key = item.productId || item.url;
             if (!key) continue;
-            if (seenKeys.has(key)) continue;
+
+            // If we already saved this exact product ID, skip
+            if (item.productId && savedProductIds.has(item.productId)) continue;
+            // Fallback to URL if no ID
+            if (!item.productId && item.url && seenKeys.has(item.url)) continue;
+
             if (!passesFilters(item)) continue;
 
             filtered.push(item);
-            seenKeys.add(key);
+            if (item.productId) savedProductIds.add(item.productId);
+            if (item.url) seenKeys.add(item.url);
+
             if (itemsSaved + filtered.length >= MAX_ITEMS) break;
         }
 
@@ -616,23 +633,34 @@ const saveItems = async (items, logger) => {
             itemsSaved += filtered.length;
             anyItems = true;
             logger?.info?.(`Saved ${filtered.length} items (total ${itemsSaved}/${MAX_ITEMS})`);
-    }
-};
+        }
+    };
 
-const enqueueDetailRequests = async (products, logger) => {
-    if (!products || !products.length) return;
-    for (const product of products) {
-        if (itemsSaved >= MAX_ITEMS) break;
-        const url = product?.url ? toAbs(product.url) : null;
-        if (!url || detailQueued.has(url)) continue;
-        await requestQueue.addRequest({
-            url,
-            userData: { label: 'DETAIL', base: product },
-        });
-        detailQueued.add(url);
-        logger?.debug?.(`Queued detail: ${url}`);
-    }
-};
+    const enqueueOrSaveDetails = async (products, logger) => {
+        if (!products || !products.length) return;
+
+        // First, save what we have immediately
+        await saveItems(products, logger);
+
+        if (!scrapeDetails) return;
+
+        for (const product of products) {
+            if (itemsEnqueued >= MAX_ITEMS) break;
+            const url = product?.url ? toAbs(product.url) : null;
+            if (!url || detailQueued.has(url)) continue;
+
+            // Only queue if we really need to (optimization could go here, but user wants robustness)
+            // If we already have description, we might skip, but let's follow user wish for "deep review"
+
+            await requestQueue.addRequest({
+                url,
+                userData: { label: 'DETAIL', base: product },
+            });
+            detailQueued.add(url);
+            itemsEnqueued++;
+            logger?.debug?.(`Queued detail: ${url}`);
+        }
+    };
 
     const tryProductSearchApi = async ({ bootstrap, offset, limit, session, logger }) => {
         const apiParams = {
@@ -776,17 +804,27 @@ const enqueueDetailRequests = async (products, logger) => {
                     if (apiData?.hits?.length) {
                         usedApi = true;
                         const mapped = apiData.hits.map(mapSearchHit).filter(Boolean);
-                        await enqueueDetailRequests(mapped, crawlerLog);
+
+                        // Critical fix: Save items immediately and manage queue count
+                        await enqueueOrSaveDetails(mapped, crawlerLog);
 
                         const total = Number.isFinite(apiData.total) ? apiData.total : null;
                         let offset = Number.isFinite(apiData.offset) ? apiData.offset : startOffset;
                         let limit = Number.isFinite(apiData.limit) ? apiData.limit : pageSize;
                         let pageNum = startPage;
 
-                        while (itemsSaved < MAX_ITEMS && pageNum < MAX_PAGES) {
+                        // Loop based on itemsEnqueued to ensure we queue enough detail pages
+                        // But also check itemsSaved to stop early if we are in "scrapeDetails=false" mode or if we are satisfied.
+                        while (
+                            (scrapeDetails ? itemsEnqueued < MAX_ITEMS : itemsSaved < MAX_ITEMS) &&
+                            pageNum < MAX_PAGES
+                        ) {
                             if (total !== null && offset + limit >= total) break;
                             offset += limit;
                             pageNum += 1;
+
+                            // Small delay to be polite to the API
+                            await new Promise(r => setTimeout(r, 500));
 
                             const nextData = await tryProductSearchApi({
                                 bootstrap,
@@ -798,7 +836,7 @@ const enqueueDetailRequests = async (products, logger) => {
 
                             if (!nextData?.hits?.length) break;
                             const mappedNext = nextData.hits.map(mapSearchHit).filter(Boolean);
-                            await enqueueDetailRequests(mappedNext, crawlerLog);
+                            await enqueueOrSaveDetails(mappedNext, crawlerLog);
                         }
                     }
                 }
@@ -806,14 +844,15 @@ const enqueueDetailRequests = async (products, logger) => {
                 if (!usedApi && bootstrap.productSearch?.hits?.length) {
                     crawlerLog.info('Using preloaded product-search data');
                     const mapped = bootstrap.productSearch.hits.map(mapSearchHit).filter(Boolean);
-                    await enqueueDetailRequests(mapped, crawlerLog);
+                    await enqueueOrSaveDetails(mapped, crawlerLog);
+                    usedApi = true; // Mark as used so we don't fall back unnecessarily
                 }
 
                 if (!usedApi && itemsSaved < MAX_ITEMS) {
                     const jsonLdProducts = extractJsonLdProducts($);
                     if (jsonLdProducts.length) {
                         crawlerLog.info('Using JSON-LD products');
-                        await enqueueDetailRequests(jsonLdProducts, crawlerLog);
+                        await enqueueOrSaveDetails(jsonLdProducts, crawlerLog);
                     }
                 }
 
@@ -821,20 +860,24 @@ const enqueueDetailRequests = async (products, logger) => {
                     const htmlProducts = extractProductsFromHtml($);
                     if (htmlProducts.length) {
                         crawlerLog.info('Using HTML product tiles');
-                        await enqueueDetailRequests(htmlProducts, crawlerLog);
+                        await enqueueOrSaveDetails(htmlProducts, crawlerLog);
                     }
                 }
 
-                if (!usedApi && itemsSaved < MAX_ITEMS && startPage < MAX_PAGES) {
+                // Pagination for fallback methods (only if API failed)
+                if (!usedApi && itemsEnqueued < MAX_ITEMS && startPage < MAX_PAGES) {
                     const nextUrl = findNextPage($, request.url, pageSize);
                     if (nextUrl) {
                         await requestQueue.addRequest({
                             url: nextUrl,
                             userData: { label: 'LIST', pageNum: startPage + 1 },
                         });
-                    } else if (!anyItems) {
-                        await enqueueSitemapFallback(session, crawlerLog);
                     }
+                }
+
+                // Final fallback check - only if we really found nothing
+                if (!anyItems && itemsEnqueued === 0 && !usedApi) {
+                    await enqueueSitemapFallback(session, crawlerLog);
                 }
             },
             errorHandler({ request, log: crawlerLog }, error) {
