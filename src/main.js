@@ -675,8 +675,20 @@ try {
         };
 
         const endpoints = buildApiEndpoints(bootstrap);
-        if (!endpoints.length || !apiParams.clientId || !apiParams.siteId) return null;
-        if (!Array.isArray(apiParams.refine) || apiParams.refine.length === 0) return null;
+        if (!endpoints.length) {
+            logger?.debug?.('No API endpoints available');
+            return null;
+        }
+        if (!apiParams.clientId || !apiParams.siteId) {
+            logger?.debug?.(`Missing API credentials: clientId=${apiParams.clientId}, siteId=${apiParams.siteId}`);
+            return null;
+        }
+
+        // Refine params are optional - they might not be present in preloaded data
+        // If missing, we'll try anyway as the API might still work
+        if (!Array.isArray(apiParams.refine) || apiParams.refine.length === 0) {
+            logger?.debug?.('No refine parameters found, attempting API call anyway');
+        }
 
         for (const base of endpoints) {
             const params = buildSearchParams({
@@ -688,7 +700,11 @@ try {
             const url = `${base}?${params.toString()}`;
             logger?.debug?.(`Attempting JSON API: ${url}`);
             const data = await fetchJson({ url, session, proxyConfiguration, logger });
-            if (data && Array.isArray(data.hits)) return data;
+            if (data && Array.isArray(data.hits)) {
+                logger?.info?.(`Successfully fetched ${data.hits.length} products from API`);
+                return data;
+            }
+            logger?.debug?.(`API endpoint ${base} returned no data`);
         }
 
         return null;
