@@ -819,6 +819,31 @@ try {
             description: item.description || null,
             features: item.features || [],
             materials: item.materials || [],
+            attributes: item.attributes || [],
+            categories: item.categories || [],
+            gender: item.gender || [],
+            colorName: item.colorName || null,
+        };
+    };
+
+    const shapeItem = (item) => {
+        const normalized = normalizeItem(item);
+        if (!normalized) return null;
+        if (scrapeDetails) return normalized;
+
+        return {
+            title: normalized.title,
+            brand: normalized.brand,
+            price: normalized.price,
+            originalPrice: normalized.originalPrice,
+            currency: normalized.currency,
+            url: normalized.url,
+            image: normalized.image,
+            images: normalized.images,
+            colors: normalized.colors,
+            sizes: normalized.sizes,
+            inStock: normalized.inStock,
+            productId: normalized.productId,
         };
     };
 
@@ -828,7 +853,7 @@ try {
 
         const filtered = [];
         for (const raw of items) {
-            const item = normalizeItem(raw);
+            const item = shapeItem(raw);
             if (!item) continue;
 
             // Listing mode requires a canonical URL and a visible title.
