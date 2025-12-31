@@ -5,6 +5,9 @@
   "brand": "",
   "proxyConfiguration": {
     "useApifyProxy": true,
-    "apifyProxyGroups": ["RESIDENTIAL"]
-  }
+    "apifyProxyGroups": [
+      "RESIDENTIAL"
+    ]
+  },
+  "scrapeDetails": true
 }

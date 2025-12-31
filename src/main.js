@@ -801,6 +801,17 @@ try {
                         logger: crawlerLog,
                     });
 
+                    // Fallback to preloaded data if API returned nothing (or failed) but preloaded exists
+                    if ((!apiData || !apiData.hits || !apiData.hits.length) && bootstrap.productSearch?.hits?.length) {
+                        apiData = {
+                            hits: bootstrap.productSearch.hits,
+                            total: bootstrap.productSearch.total || null,
+                            limit: bootstrap.productSearch.limit || pageSize,
+                            offset: bootstrap.productSearch.offset || 0
+                        };
+                        crawlerLog.info('Using preloaded product-search data');
+                    }
+
                     if (apiData?.hits?.length) {
                         usedApi = true;
                         const mapped = apiData.hits.map(mapSearchHit).filter(Boolean);
@@ -841,12 +852,7 @@ try {
                     }
                 }
 
-                if (!usedApi && bootstrap.productSearch?.hits?.length) {
-                    crawlerLog.info('Using preloaded product-search data');
-                    const mapped = bootstrap.productSearch.hits.map(mapSearchHit).filter(Boolean);
-                    await enqueueOrSaveDetails(mapped, crawlerLog);
-                    usedApi = true; // Mark as used so we don't fall back unnecessarily
-                }
+                // Preloaded data is now handled above within the API logic to enable pagination fallback
 
                 if (!usedApi && itemsSaved < MAX_ITEMS) {
                     const jsonLdProducts = extractJsonLdProducts($);

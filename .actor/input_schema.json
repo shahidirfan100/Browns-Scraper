@@ -11,7 +11,9 @@
       "editor": "requestListSources",
       "default": [],
       "prefill": [
-        { "url": "https://www.brownsshoes.com/en/women" }
+        {
+          "url": "https://www.brownsshoes.com/en/women"
+        }
       ]
     },
     "category": {
@@ -19,8 +21,18 @@
       "type": "string",
       "description": "Product category to scrape (e.g., 'women', 'men', 'kids').",
       "editor": "select",
-      "enum": ["women", "men", "kids", "sale"],
-      "enumTitles": ["Women", "Men", "Kids", "Sale"],
+      "enum": [
+        "women",
+        "men",
+        "kids",
+        "sale"
+      ],
+      "enumTitles": [
+        "Women",
+        "Men",
+        "Kids",
+        "Sale"
+      ],
       "default": "women",
       "prefill": "women"
     },
@@ -48,6 +60,13 @@
       "prefill": 50,
       "editor": "number"
     },
+    "scrapeDetails": {
+      "title": "Scrape Detailed Information",
+      "type": "boolean",
+      "description": "If enabled, the scraper will visit each product page to extract full details (description, materials, etc.). If disabled, it runs much faster but only collects listing data.",
+      "default": true,
+      "prefill": true
+    },
     "proxyConfiguration": {
       "title": "Proxy Configuration",
       "type": "object",
@@ -55,11 +74,15 @@
       "editor": "proxy",
       "default": {
         "useApifyProxy": true,
-        "apifyProxyGroups": ["RESIDENTIAL"]
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
       },
       "prefill": {
         "useApifyProxy": true,
-        "apifyProxyGroups": ["RESIDENTIAL"]
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
       }
     }
   },
