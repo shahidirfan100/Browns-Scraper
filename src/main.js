@@ -542,37 +542,6 @@ const extractProductsFromHtml = ($) => {
     return products;
 };
 
-const findNextPage = ($, currentUrl, pageSize) => {
-    const relNext = $('link[rel="next"]').attr('href') || $('a[rel="next"]').attr('href');
-    if (relNext) return toAbs(relNext);
-
-    const nextLink = $('a[aria-label*="Next"], a[title*="Next"], a.next').first();
-    if (nextLink.length) {
-        const href = nextLink.attr('href');
-        return href ? toAbs(href) : null;
-    }
-
-    try {
-        const url = new URL(currentUrl);
-        if (url.searchParams.has('start')) {
-            const start = Number(url.searchParams.get('start') || 0);
-            const size = Number(url.searchParams.get('sz') || pageSize || DEFAULT_PAGE_SIZE);
-            url.searchParams.set('start', String(start + size));
-            if (!url.searchParams.has('sz')) url.searchParams.set('sz', String(size));
-            return url.href;
-        }
-        if (url.searchParams.has('page')) {
-            const page = Number(url.searchParams.get('page') || 1);
-            url.searchParams.set('page', String(page + 1));
-            return url.href;
-        }
-    } catch {
-        return null;
-    }
-
-    return null;
-};
-
 const getLocaleFromUrl = (url) => {
     try {
         const parts = new URL(url).pathname.split('/').filter(Boolean);
@@ -617,72 +586,7 @@ const buildGridUrl = ({ requestUrl, siteId, locale, cgid, start, size }) => {
     return base.href;
 };
 
-const parseSitemapXml = (xml) => {
-    const $ = load(xml, { xmlMode: true });
-    const sitemapUrls = $('sitemap > loc')
-        .map((_, el) => $(el).text().trim())
-        .get();
-    const urlEntries = $('url > loc')
-        .map((_, el) => $(el).text().trim())
-        .get();
-    return { sitemapUrls, urlEntries };
-};
-
-const fetchSitemapUrls = async ({ proxyConfiguration, session, logger }) => {
-    const candidates = [
-        `${BASE_URL}/sitemap.xml`,
-        `${BASE_URL}/sitemap_index.xml`,
-        `${BASE_URL}/sitemap-index.xml`,
-    ];
-
-    for (const candidate of candidates) {
-        const proxyUrl = await resolveProxyUrl({ proxyConfiguration, session, logger });
-        const response = await gotScraping({
-            url: candidate,
-            proxyUrl,
-            responseType: 'text',
-            throwHttpErrors: false,
-            timeout: { request: 30000 },
-            retry: { limit: 1 },
-            headers: getSessionHeaders(session),
-            cookieJar: session?.cookieJar,
-        });
-
-        if (response.statusCode < 200 || response.statusCode >= 300) {
-            continue;
-        }
-
-        const { sitemapUrls, urlEntries } = parseSitemapXml(response.body || '');
-        if (urlEntries.length) {
-            return urlEntries;
-        }
-
-        if (sitemapUrls.length) {
-            const nestedUrls = [];
-            for (const sitemapUrl of sitemapUrls.slice(0, 10)) {
-                const nestedProxyUrl = await resolveProxyUrl({ proxyConfiguration, session, logger });
-                const nested = await gotScraping({
-                    url: sitemapUrl,
-                    proxyUrl: nestedProxyUrl,
-                    responseType: 'text',
-                    throwHttpErrors: false,
-                    timeout: { request: 30000 },
-                    retry: { limit: 1 },
-                    headers: getSessionHeaders(session),
-                    cookieJar: session?.cookieJar,
-                });
-                if (nested.statusCode < 200 || nested.statusCode >= 300) continue;
-                const parsed = parseSitemapXml(nested.body || '');
-                nestedUrls.push(...parsed.urlEntries);
-            }
-            if (nestedUrls.length) return nestedUrls;
-        }
-
-        logger?.debug?.(`No sitemap URLs found in ${candidate}`);
-    }
-
-    return [];
-};
+// Sitemap fallback removed: the actor operates only on listing/API-style sources.
 
 await Actor.init();
 
@@ -749,7 +653,6 @@ try {
     let itemsSaved = 0;
     let maxLimitHit = false;
     let anyItems = false;
-    let sitemapQueued = false;
     let crawlerInstance;
     const seenKeys = new Set();
     const detailQueued = new Set();
@@ -912,27 +815,6 @@ try {
         return null;
     };
 
-    const enqueueSitemapFallback = async (session, logger) => {
-        if (sitemapQueued) return;
-        sitemapQueued = true;
-        logger.info('Attempting sitemap fallback');
-
-        const urls = await fetchSitemapUrls({ proxyConfiguration, session, logger });
-        const productUrls = uniqStrings(urls.filter((url) => url.includes('/product/'))).slice(0, MAX_ITEMS * 3);
-        if (!productUrls.length) {
-            logger.warning('No product URLs found in sitemap');
-            return;
-        }
-
-        for (const url of productUrls) {
-            await requestQueue.addRequest({
-                url,
-                userData: { label: 'PRODUCT' },
-            });
-        }
-        logger.info(`Queued ${productUrls.length} product URLs from sitemap`);
-    };
-
     const runCrawler = async () => {
         crawlerInstance = new CheerioCrawler({
             requestQueue,
@@ -1035,78 +917,70 @@ try {
 
                 let usedApi = false;
                 let usedPreloaded = false;
-                let apiPaginationFailed = false;
-                let gridPaginationDone = false;
 
-                if (!isGridRequest && bootstrap.shortCode && bootstrap.clientId && bootstrap.organizationId && bootstrap.siteId) {
+                if (!isGridRequest && bootstrap.productSearch?.hits?.length) {
+                    usedPreloaded = true;
+                    crawlerLog.info('Using preloaded product-search data');
+                    const mapped = bootstrap.productSearch.hits.map(mapSearchHit).filter(Boolean);
+                    await enqueueOrSaveDetails(mapped, crawlerLog);
+                }
+
+                // Try Commerce Cloud API only if we have all required credentials.
+                if (
+                    !isGridRequest &&
+                    itemsSaved < MAX_ITEMS &&
+                    bootstrap.shortCode &&
+                    bootstrap.clientId &&
+                    bootstrap.organizationId &&
+                    (bootstrap.siteId || bootstrap.productSearch?.params?.siteId)
+                ) {
+                    const bootstrapForApi = {
+                        ...bootstrap,
+                        siteId: bootstrap.siteId || bootstrap.productSearch?.params?.siteId,
+                    };
                     let apiData = await tryProductSearchApi({
-                        bootstrap,
+                        bootstrap: bootstrapForApi,
                         offset: startOffset,
                         limit: pageSize,
                         session,
                         logger: crawlerLog,
                     });
 
-                    // Fallback to preloaded data if API returned nothing (or failed) but preloaded exists
-                    if ((!apiData || !apiData.hits || !apiData.hits.length) && bootstrap.productSearch?.hits?.length) {
-                        apiData = {
-                            hits: bootstrap.productSearch.hits,
-                            total: bootstrap.productSearch.total || null,
-                            limit: bootstrap.productSearch.limit || pageSize,
-                            offset: bootstrap.productSearch.offset || 0
-                        };
-                        usedPreloaded = true;
-                        crawlerLog.info('Using preloaded product-search data');
-                    }
-
                     if (apiData?.hits?.length) {
-                        if (!usedPreloaded) usedApi = true;
+                        usedApi = true;
                         const mapped = apiData.hits.map(mapSearchHit).filter(Boolean);
-
-                        // Critical fix: Save items immediately and manage queue count
                         await enqueueOrSaveDetails(mapped, crawlerLog);
 
-                        if (usedApi && itemsSaved < MAX_ITEMS) {
-                            const total = Number.isFinite(apiData.total) ? apiData.total : null;
-                            let offset = Number.isFinite(apiData.offset) ? apiData.offset : startOffset;
-                            let limit = Number.isFinite(apiData.limit) ? apiData.limit : pageSize;
-                            let pageNum = startPage;
+                        const total = Number.isFinite(apiData.total) ? apiData.total : null;
+                        let offset = Number.isFinite(apiData.offset) ? apiData.offset : startOffset;
+                        let limit = Number.isFinite(apiData.limit) ? apiData.limit : pageSize;
+                        let pageNum = startPage;
 
-                            // Loop based on itemsSaved to ensure we get enough products
-                            // Continue pagination until we have enough saved items
-                            while (
-                                itemsSaved < MAX_ITEMS &&
-                                pageNum < MAX_PAGES
-                            ) {
-                                if (total !== null && offset + limit >= total) {
-                                    crawlerLog.info(`Reached end of results (offset ${offset}, total ${total})`);
-                                    break;
-                                }
-                                offset += limit;
-                                pageNum += 1;
-
-                                crawlerLog.info(`Fetching page ${pageNum} with offset ${offset}`);
-
-                                // Small delay to be polite to the API
-                                await new Promise(r => setTimeout(r, 500));
-
-                                const nextData = await tryProductSearchApi({
-                                    bootstrap,
-                                    offset,
-                                    limit,
-                                    session,
-                                    logger: crawlerLog,
-                                });
-
-                                if (!nextData?.hits?.length) {
-                                    apiPaginationFailed = true;
-                                    crawlerLog.warning(`No more products found at offset ${offset}. API may have failed or reached end.`);
-                                    break;
-                                }
-                                crawlerLog.info(`Fetched ${nextData.hits.length} products from API at offset ${offset}`);
-                                const mappedNext = nextData.hits.map(mapSearchHit).filter(Boolean);
-                                await enqueueOrSaveDetails(mappedNext, crawlerLog);
+                        while (itemsSaved < MAX_ITEMS && pageNum < MAX_PAGES) {
+                            if (total !== null && offset + limit >= total) {
+                                crawlerLog.info(`Reached end of results (offset ${offset}, total ${total})`);
+                                break;
                             }
+                            offset += limit;
+                            pageNum += 1;
+
+                            crawlerLog.info(`Fetching page ${pageNum} with offset ${offset}`);
+                            await new Promise((r) => setTimeout(r, 500));
+
+                            const nextData = await tryProductSearchApi({
+                                bootstrap: bootstrapForApi,
+                                offset,
+                                limit,
+                                session,
+                                logger: crawlerLog,
+                            });
+
+                            if (!nextData?.hits?.length) {
+                                crawlerLog.warning(`No more products found at offset ${offset}. API may have failed or reached end.`);
+                                break;
+                            }
+                            const mappedNext = nextData.hits.map(mapSearchHit).filter(Boolean);
+                            await enqueueOrSaveDetails(mappedNext, crawlerLog);
                         }
                     }
                 }
@@ -1165,74 +1039,10 @@ try {
                             await enqueueOrSaveDetails(gridProducts, crawlerLog);
                             if (itemsSaved >= MAX_ITEMS) break;
                         }
-                        gridPaginationDone = true;
                     }
                 }
 
-                if (!usedListingData && itemsSaved < MAX_ITEMS) {
-                    const jsonLdProducts = extractJsonLdProducts($);
-                    if (jsonLdProducts.length) {
-                        crawlerLog.info('Using JSON-LD products');
-                        await enqueueOrSaveDetails(jsonLdProducts, crawlerLog);
-                    }
-                }
-
-                if (!usedListingData && itemsSaved < MAX_ITEMS) {
-                    const htmlProducts = extractProductsFromHtml($);
-                    if (htmlProducts.length) {
-                        crawlerLog.info('Using HTML product tiles');
-                        await enqueueOrSaveDetails(htmlProducts, crawlerLog);
-                    }
-                }
-
-                // Pagination for fallback methods (only if API failed)
-                if (!gridPaginationDone && (apiPaginationFailed || !usedApi) && itemsSaved < MAX_ITEMS && startPage < MAX_PAGES) {
-                    let nextUrl = findNextPage($, request.url, pageSize);
-                    if (!nextUrl && usedPreloaded) {
-                        const cgid =
-                            getCgidFromRefine(bootstrap.productSearch?.params?.refine) ||
-                            getCgidFromUrl(request.url);
-                        const locale =
-                            bootstrap.productSearch?.params?.locale ||
-                            getLocaleFromUrl(request.url) ||
-                            'en';
-                        const nextOffset = startOffset + pageSize;
-                        nextUrl = buildGridUrl({
-                            requestUrl: request.url,
-                            siteId: bootstrap.siteId,
-                            locale,
-                            cgid,
-                            start: nextOffset,
-                            size: pageSize,
-                        });
-                        if (nextUrl) {
-                            crawlerLog.info(`Queueing grid page ${startPage + 1} with start ${nextOffset}`);
-                        }
-                    }
-                    if (nextUrl) {
-                        let nextOffset = undefined;
-                        try {
-                            const urlObj = new URL(nextUrl);
-                            const start = Number(urlObj.searchParams.get('start'));
-                            if (Number.isFinite(start)) nextOffset = start;
-                        } catch {
-                            // ignore
-                        }
-                        await requestQueue.addRequest({
-                            url: nextUrl,
-                            userData: {
-                                label: nextUrl.includes('Search-UpdateGrid') ? 'GRID' : 'LIST',
-                                pageNum: startPage + 1,
-                                offset: nextOffset,
-                            },
-                        });
-                    }
-                }
-
-                // Final fallback check - only if we really found nothing
-                if (!anyItems && itemsEnqueued === 0 && !usedListingData) {
-                    await enqueueSitemapFallback(session, crawlerLog);
-                }
+                // No sitemap fallback: we only use listing/API-style sources.
             },
             errorHandler({ request, log: crawlerLog }, error) {
                 if (itemsSaved >= MAX_ITEMS) return;
