@@ -248,6 +248,40 @@ const fetchJson = async ({ url, session, proxyConfiguration, logger }) => {
     }
 };
 
+const fetchHtml = async ({ url, session, proxyConfiguration, logger }) => {
+    try {
+        const proxyUrl = await resolveProxyUrl({ proxyConfiguration, session, logger });
+        const response = await gotScraping({
+            url,
+            proxyUrl,
+            responseType: 'text',
+            throwHttpErrors: false,
+            timeout: { request: 30000 },
+            retry: { limit: 2 },
+            headers: {
+                ...getSessionHeaders(session),
+                Accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
+            },
+            cookieJar: session?.cookieJar,
+        });
+
+        if (response.statusCode >= 200 && response.statusCode < 300 && response.body) {
+            return response.body;
+        }
+
+        logger?.debug?.(`HTML request failed (${response.statusCode}) ${url}`);
+        return null;
+    } catch (err) {
+        const message = err?.message || String(err);
+        if (isProxyAuthError(message)) {
+            proxyState.authFailed = true;
+            disableProxy('Proxy authentication failed', logger);
+        }
+        logger?.debug?.(`HTML request error: ${message}`);
+        return null;
+    }
+};
+
 const mapVariationValues = (variationAttributes, ids) => {
     const values = [];
     for (const attr of variationAttributes || []) {
@@ -426,6 +460,50 @@ const findNextPage = ($, currentUrl, pageSize) => {
     }
 
     return null;
+};
+
+const getLocaleFromUrl = (url) => {
+    try {
+        const parts = new URL(url).pathname.split('/').filter(Boolean);
+        return parts[0] || null;
+    } catch {
+        return null;
+    }
+};
+
+const getCgidFromRefine = (refine) => {
+    if (!Array.isArray(refine)) return null;
+    const entry = refine.find((item) => String(item).startsWith('cgid='));
+    if (!entry) return null;
+    const value = String(entry).split('=').slice(1).join('=');
+    return value || null;
+};
+
+const getCgidFromUrl = (url) => {
+    try {
+        return new URL(url).searchParams.get('cgid');
+    } catch {
+        return null;
+    }
+};
+
+const buildGridUrl = ({ requestUrl, siteId, locale, cgid, start, size }) => {
+    if (!siteId || !locale || !cgid || !Number.isFinite(start)) return null;
+    const base = new URL(`${BASE_URL}/on/demandware.store/Sites-${siteId}-Site/${locale}/Search-UpdateGrid`);
+    try {
+        const current = new URL(requestUrl);
+        for (const [key, value] of current.searchParams.entries()) {
+            if (key === 'start' || key === 'sz' || key === 'page') continue;
+            base.searchParams.append(key, value);
+        }
+    } catch {
+        // Ignore invalid URLs and continue with minimal params.
+    }
+
+    base.searchParams.set('cgid', cgid);
+    base.searchParams.set('start', String(start));
+    base.searchParams.set('sz', String(size || DEFAULT_PAGE_SIZE));
+    return base.href;
 };
 
 const parseSitemapXml = (xml) => {
@@ -799,18 +877,44 @@ try {
                     return;
                 }
 
+                const isGridRequest = request.userData?.label === 'GRID';
                 const html = $.root().html() || '';
-                const bootstrap = extractBootstrapConfig(html);
+                const bootstrap = isGridRequest ? {} : extractBootstrapConfig(html);
 
-                const pageSize = bootstrap.productSearch?.limit || DEFAULT_PAGE_SIZE;
-                const startOffset = request.userData?.offset ?? bootstrap.productSearch?.offset ?? 0;
+                let pageSize = DEFAULT_PAGE_SIZE;
+                try {
+                    const urlObj = new URL(request.url);
+                    const sz = Number(urlObj.searchParams.get('sz'));
+                    if (Number.isFinite(sz) && sz > 0) pageSize = sz;
+                } catch {
+                    // ignore
+                }
+                if (!isGridRequest && Number.isFinite(bootstrap.productSearch?.limit)) {
+                    pageSize = bootstrap.productSearch.limit;
+                }
+
+                let startOffset = 0;
+                try {
+                    const urlObj = new URL(request.url);
+                    const start = Number(urlObj.searchParams.get('start'));
+                    if (Number.isFinite(start) && start >= 0) startOffset = start;
+                } catch {
+                    // ignore
+                }
+                if (Number.isFinite(request.userData?.offset)) {
+                    startOffset = request.userData.offset;
+                } else if (!isGridRequest && Number.isFinite(bootstrap.productSearch?.offset)) {
+                    startOffset = bootstrap.productSearch.offset;
+                }
+
                 const startPage = request.userData?.pageNum ?? 1;
 
                 let usedApi = false;
                 let usedPreloaded = false;
                 let apiPaginationFailed = false;
+                let gridPaginationDone = false;
 
-                if (bootstrap.shortCode && bootstrap.clientId && bootstrap.organizationId && bootstrap.siteId) {
+                if (!isGridRequest && bootstrap.shortCode && bootstrap.clientId && bootstrap.organizationId && bootstrap.siteId) {
                     let apiData = await tryProductSearchApi({
                         bootstrap,
                         offset: startOffset,
@@ -887,6 +991,59 @@ try {
 
                 const usedListingData = usedApi || usedPreloaded;
 
+                if (!isGridRequest && usedPreloaded && !usedApi && itemsSaved < MAX_ITEMS) {
+                    const cgid =
+                        getCgidFromRefine(bootstrap.productSearch?.params?.refine) ||
+                        getCgidFromUrl(request.url);
+                    const locale =
+                        bootstrap.productSearch?.params?.locale ||
+                        getLocaleFromUrl(request.url) ||
+                        'en';
+                    const siteId = bootstrap.siteId || bootstrap.productSearch?.params?.siteId;
+
+                    if (!siteId || !cgid) {
+                        crawlerLog.warning('Grid pagination unavailable: missing siteId or cgid.');
+                    } else {
+                        let offset = startOffset;
+                        let pageNum = startPage;
+                        while (itemsSaved < MAX_ITEMS && pageNum < MAX_PAGES) {
+                            offset += pageSize;
+                            pageNum += 1;
+                            const gridUrl = buildGridUrl({
+                                requestUrl: request.url,
+                                siteId,
+                                locale,
+                                cgid,
+                                start: offset,
+                                size: pageSize,
+                            });
+                            if (!gridUrl) {
+                                crawlerLog.warning('Grid pagination unavailable for this request.');
+                                break;
+                            }
+                            crawlerLog.info(`Fetching grid page ${pageNum} with start ${offset}`);
+                            const gridHtml = await fetchHtml({
+                                url: gridUrl,
+                                session,
+                                proxyConfiguration,
+                                logger: crawlerLog,
+                            });
+                            if (!gridHtml) {
+                                crawlerLog.warning(`Grid request failed at start ${offset}`);
+                                break;
+                            }
+                            const grid$ = load(gridHtml);
+                            const gridProducts = extractProductsFromHtml(grid$);
+                            if (!gridProducts.length) {
+                                crawlerLog.warning(`No products found in grid at start ${offset}`);
+                                break;
+                            }
+                            await enqueueOrSaveDetails(gridProducts, crawlerLog);
+                        }
+                        gridPaginationDone = true;
+                    }
+                }
+
                 if (!usedListingData && itemsSaved < MAX_ITEMS) {
                     const jsonLdProducts = extractJsonLdProducts($);
                     if (jsonLdProducts.length) {
@@ -904,12 +1061,45 @@ try {
                 }
 
                 // Pagination for fallback methods (only if API failed)
-                if ((apiPaginationFailed || !usedApi) && itemsSaved < MAX_ITEMS && startPage < MAX_PAGES) {
-                    const nextUrl = findNextPage($, request.url, pageSize);
+                if (!gridPaginationDone && (apiPaginationFailed || !usedApi) && itemsSaved < MAX_ITEMS && startPage < MAX_PAGES) {
+                    let nextUrl = findNextPage($, request.url, pageSize);
+                    if (!nextUrl && usedPreloaded) {
+                        const cgid =
+                            getCgidFromRefine(bootstrap.productSearch?.params?.refine) ||
+                            getCgidFromUrl(request.url);
+                        const locale =
+                            bootstrap.productSearch?.params?.locale ||
+                            getLocaleFromUrl(request.url) ||
+                            'en';
+                        const nextOffset = startOffset + pageSize;
+                        nextUrl = buildGridUrl({
+                            requestUrl: request.url,
+                            siteId: bootstrap.siteId,
+                            locale,
+                            cgid,
+                            start: nextOffset,
+                            size: pageSize,
+                        });
+                        if (nextUrl) {
+                            crawlerLog.info(`Queueing grid page ${startPage + 1} with start ${nextOffset}`);
+                        }
+                    }
                     if (nextUrl) {
+                        let nextOffset = undefined;
+                        try {
+                            const urlObj = new URL(nextUrl);
+                            const start = Number(urlObj.searchParams.get('start'));
+                            if (Number.isFinite(start)) nextOffset = start;
+                        } catch {
+                            // ignore
+                        }
                         await requestQueue.addRequest({
                             url: nextUrl,
-                            userData: { label: 'LIST', pageNum: startPage + 1 },
+                            userData: {
+                                label: nextUrl.includes('Search-UpdateGrid') ? 'GRID' : 'LIST',
+                                pageNum: startPage + 1,
+                                offset: nextOffset,
+                            },
                         });
                     }
                 }
