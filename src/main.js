@@ -807,6 +807,8 @@ try {
                 const startPage = request.userData?.pageNum ?? 1;
 
                 let usedApi = false;
+                let usedPreloaded = false;
+                let apiPaginationFailed = false;
 
                 if (bootstrap.shortCode && bootstrap.clientId && bootstrap.organizationId && bootstrap.siteId) {
                     let apiData = await tryProductSearchApi({
@@ -825,61 +827,67 @@ try {
                             limit: bootstrap.productSearch.limit || pageSize,
                             offset: bootstrap.productSearch.offset || 0
                         };
+                        usedPreloaded = true;
                         crawlerLog.info('Using preloaded product-search data');
                     }
 
                     if (apiData?.hits?.length) {
-                        usedApi = true;
+                        if (!usedPreloaded) usedApi = true;
                         const mapped = apiData.hits.map(mapSearchHit).filter(Boolean);
 
                         // Critical fix: Save items immediately and manage queue count
                         await enqueueOrSaveDetails(mapped, crawlerLog);
 
-                        const total = Number.isFinite(apiData.total) ? apiData.total : null;
-                        let offset = Number.isFinite(apiData.offset) ? apiData.offset : startOffset;
-                        let limit = Number.isFinite(apiData.limit) ? apiData.limit : pageSize;
-                        let pageNum = startPage;
+                        if (usedApi) {
+                            const total = Number.isFinite(apiData.total) ? apiData.total : null;
+                            let offset = Number.isFinite(apiData.offset) ? apiData.offset : startOffset;
+                            let limit = Number.isFinite(apiData.limit) ? apiData.limit : pageSize;
+                            let pageNum = startPage;
 
-                        // Loop based on itemsSaved to ensure we get enough products
-                        // Continue pagination until we have enough saved items
-                        while (
-                            itemsSaved < MAX_ITEMS &&
-                            pageNum < MAX_PAGES
-                        ) {
-                            if (total !== null && offset + limit >= total) {
-                                crawlerLog.info(`Reached end of results (offset ${offset}, total ${total})`);
-                                break;
+                            // Loop based on itemsSaved to ensure we get enough products
+                            // Continue pagination until we have enough saved items
+                            while (
+                                itemsSaved < MAX_ITEMS &&
+                                pageNum < MAX_PAGES
+                            ) {
+                                if (total !== null && offset + limit >= total) {
+                                    crawlerLog.info(`Reached end of results (offset ${offset}, total ${total})`);
+                                    break;
+                                }
+                                offset += limit;
+                                pageNum += 1;
+
+                                crawlerLog.info(`Fetching page ${pageNum} with offset ${offset}`);
+
+                                // Small delay to be polite to the API
+                                await new Promise(r => setTimeout(r, 500));
+
+                                const nextData = await tryProductSearchApi({
+                                    bootstrap,
+                                    offset,
+                                    limit,
+                                    session,
+                                    logger: crawlerLog,
+                                });
+
+                                if (!nextData?.hits?.length) {
+                                    apiPaginationFailed = true;
+                                    crawlerLog.warning(`No more products found at offset ${offset}. API may have failed or reached end.`);
+                                    break;
+                                }
+                                crawlerLog.info(`Fetched ${nextData.hits.length} products from API at offset ${offset}`);
+                                const mappedNext = nextData.hits.map(mapSearchHit).filter(Boolean);
+                                await enqueueOrSaveDetails(mappedNext, crawlerLog);
                             }
-                            offset += limit;
-                            pageNum += 1;
-
-                            crawlerLog.info(`Fetching page ${pageNum} with offset ${offset}`);
-
-                            // Small delay to be polite to the API
-                            await new Promise(r => setTimeout(r, 500));
-
-                            const nextData = await tryProductSearchApi({
-                                bootstrap,
-                                offset,
-                                limit,
-                                session,
-                                logger: crawlerLog,
-                            });
-
-                            if (!nextData?.hits?.length) {
-                                crawlerLog.warning(`No more products found at offset ${offset}. API may have failed or reached end.`);
-                                break;
-                            }
-                            crawlerLog.info(`Fetched ${nextData.hits.length} products from API at offset ${offset}`);
-                            const mappedNext = nextData.hits.map(mapSearchHit).filter(Boolean);
-                            await enqueueOrSaveDetails(mappedNext, crawlerLog);
                         }
                     }
                 }
 
                 // Preloaded data is now handled above within the API logic to enable pagination fallback
 
-                if (!usedApi && itemsSaved < MAX_ITEMS) {
+                const usedListingData = usedApi || usedPreloaded;
+
+                if (!usedListingData && itemsSaved < MAX_ITEMS) {
                     const jsonLdProducts = extractJsonLdProducts($);
                     if (jsonLdProducts.length) {
                         crawlerLog.info('Using JSON-LD products');
@@ -887,7 +895,7 @@ try {
                     }
                 }
 
-                if (!usedApi && itemsSaved < MAX_ITEMS) {
+                if (!usedListingData && itemsSaved < MAX_ITEMS) {
                     const htmlProducts = extractProductsFromHtml($);
                     if (htmlProducts.length) {
                         crawlerLog.info('Using HTML product tiles');
@@ -896,7 +904,7 @@ try {
                 }
 
                 // Pagination for fallback methods (only if API failed)
-                if (!usedApi && itemsEnqueued < MAX_ITEMS && startPage < MAX_PAGES) {
+                if ((apiPaginationFailed || !usedApi) && itemsSaved < MAX_ITEMS && startPage < MAX_PAGES) {
                     const nextUrl = findNextPage($, request.url, pageSize);
                     if (nextUrl) {
                         await requestQueue.addRequest({
@@ -907,7 +915,7 @@ try {
                 }
 
                 // Final fallback check - only if we really found nothing
-                if (!anyItems && itemsEnqueued === 0 && !usedApi) {
+                if (!anyItems && itemsEnqueued === 0 && !usedListingData) {
                     await enqueueSitemapFallback(session, crawlerLog);
                 }
             },
