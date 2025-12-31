@@ -793,7 +793,7 @@ try {
                 let usedApi = false;
 
                 if (bootstrap.shortCode && bootstrap.clientId && bootstrap.organizationId && bootstrap.siteId) {
-                    const apiData = await tryProductSearchApi({
+                    let apiData = await tryProductSearchApi({
                         bootstrap,
                         offset: startOffset,
                         limit: pageSize,
