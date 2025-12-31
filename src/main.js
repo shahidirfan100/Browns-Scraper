@@ -666,6 +666,7 @@ try {
     let itemsEnqueued = 0;
     let itemsSaved = 0;
     let maxLimitHit = false;
+    let maxQueueHit = false;
     let anyItems = false;
     let crawlerInstance;
     const seenKeys = new Set();
@@ -700,6 +701,9 @@ try {
             logger?.debug?.(`Failed to abort crawler pool: ${err?.message || err}`);
         }
     };
+
+    const getProgressCount = () => (scrapeDetails ? itemsEnqueued : itemsSaved);
+    const hasReachedTarget = () => getProgressCount() >= MAX_ITEMS;
 
     const normalizeItem = (item) => {
         if (!item || typeof item !== 'object') return null;
@@ -758,14 +762,15 @@ try {
     const enqueueOrSaveDetails = async (products, logger) => {
         if (!products || !products.length) return;
 
-        // First, save what we have immediately
-        await saveItems(products, logger);
-
-        if (!scrapeDetails) return;
+        if (!scrapeDetails) {
+            await saveItems(products, logger);
+            return;
+        }
 
         for (const product of products) {
             if (itemsEnqueued >= MAX_ITEMS) break;
-            const url = product?.url ? toAbs(product.url) : null;
+            const base = normalizeItem(product);
+            const url = base?.url || (product?.url ? normalizeProductUrl(product.url) : null);
             if (!url || detailQueued.has(url)) continue;
 
             // Only queue if we really need to (optimization could go here, but user wants robustness)
@@ -773,7 +778,7 @@ try {
 
             await requestQueue.addRequest({
                 url,
-                userData: { label: 'DETAIL', base: product },
+                userData: { label: 'DETAIL', base: { ...base, url } },
             });
             detailQueued.add(url);
             itemsEnqueued++;
@@ -853,6 +858,13 @@ try {
             async requestHandler({ request, response, $, session, log: crawlerLog }) {
                 if (itemsSaved >= MAX_ITEMS) {
                     await stopCrawler(crawlerLog);
+                    return;
+                }
+                if (scrapeDetails && itemsEnqueued >= MAX_ITEMS && request.userData?.label !== 'DETAIL') {
+                    if (!maxQueueHit) {
+                        maxQueueHit = true;
+                        crawlerLog.info(`Reached detail queue limit (${MAX_ITEMS}), skipping further listing pages.`);
+                    }
                     return;
                 }
                 if (response && [403, 407, 429, 597].includes(response.statusCode)) {
@@ -942,7 +954,7 @@ try {
                 // Try Commerce Cloud API only if we have all required credentials.
                 if (
                     !isGridRequest &&
-                    itemsSaved < MAX_ITEMS &&
+                    !hasReachedTarget() &&
                     bootstrap.shortCode &&
                     bootstrap.clientId &&
                     bootstrap.organizationId &&
@@ -970,7 +982,7 @@ try {
                         let limit = Number.isFinite(apiData.limit) ? apiData.limit : pageSize;
                         let pageNum = startPage;
 
-                        while (itemsSaved < MAX_ITEMS && pageNum < MAX_PAGES) {
+                        while (!hasReachedTarget() && pageNum < MAX_PAGES) {
                             if (total !== null && offset + limit >= total) {
                                 crawlerLog.info(`Reached end of results (offset ${offset}, total ${total})`);
                                 break;
@@ -1003,7 +1015,7 @@ try {
 
                 const usedListingData = usedApi || usedPreloaded;
 
-                if (!isGridRequest && usedPreloaded && !usedApi && itemsSaved < MAX_ITEMS) {
+                if (!isGridRequest && usedPreloaded && !usedApi && !hasReachedTarget()) {
                     const cgid =
                         getCgidFromRefine(bootstrap.productSearch?.params?.refine) ||
                         getCgidFromUrl(request.url);
@@ -1018,7 +1030,7 @@ try {
                     } else {
                         let offset = startOffset;
                         let pageNum = startPage;
-                        while (itemsSaved < MAX_ITEMS && pageNum < MAX_PAGES) {
+                        while (!hasReachedTarget() && pageNum < MAX_PAGES) {
                             offset += pageSize;
                             pageNum += 1;
                             const gridUrl = buildGridUrl({
@@ -1051,7 +1063,7 @@ try {
                                 break;
                             }
                             await enqueueOrSaveDetails(gridProducts, crawlerLog);
-                            if (itemsSaved >= MAX_ITEMS) break;
+                            if (hasReachedTarget()) break;
                         }
                     }
                 }
