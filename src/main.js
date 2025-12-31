@@ -37,6 +37,28 @@ const toNumber = (value) => {
 
 const uniqStrings = (values) => [...new Set(values.filter(Boolean))];
 
+const decodeHtmlEntities = (value) => {
+    if (!value || typeof value !== 'string') return value;
+    return value
+        .replace(/&quot;/g, '"')
+        .replace(/&#34;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&apos;/g, "'")
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&');
+};
+
+const parseJsonAttribute = (value) => {
+    if (!value) return null;
+    const decoded = decodeHtmlEntities(value);
+    try {
+        return JSON.parse(decoded);
+    } catch {
+        return null;
+    }
+};
+
 const getSessionHeaders = (session) => {
     if (!session) return headerGenerator.getHeaders();
     if (!session.userData.headers) {
@@ -397,12 +419,43 @@ const extractJsonLdProducts = ($) => {
 
 const extractProductsFromHtml = ($) => {
     const products = [];
-    const seenLinks = new Set();
+    const seenKeys = new Set();
+
+    const pushProduct = (item) => {
+        if (!item) return;
+        const key = item.productId || item.url;
+        if (!key || seenKeys.has(key)) return;
+        seenKeys.add(key);
+        products.push(item);
+    };
+
+    $('[data-segment]').each((_, el) => {
+        const data = parseJsonAttribute($(el).attr('data-segment'));
+        if (!data || typeof data !== 'object') return;
+        const url = data.url ? toAbs(data.url) : null;
+        const image = data.image_url ? toAbs(data.image_url) : null;
+        const colors = data.variant ? [String(data.variant)] : [];
+        const sizes = data.size ? [String(data.size)] : [];
+        pushProduct({
+            title: data.name || null,
+            brand: data.brand || null,
+            price: toNumber(data.price),
+            originalPrice: toNumber(data.retail_price),
+            currency: data.currency || 'CAD',
+            url,
+            image,
+            images: image ? [image] : [],
+            colors,
+            sizes,
+            inStock: true,
+            productId: data.product_id || data.stylenumber || data.sku || null,
+        });
+    });
 
     $('a[href*="/product/"]').each((_, el) => {
         const href = $(el).attr('href');
         const url = href ? toAbs(href) : null;
-        if (!url || seenLinks.has(url)) return;
+        if (!url || seenKeys.has(url)) return;
 
         const title = $(el).attr('aria-label') || $(el).find('img').attr('alt') || null;
         const card = $(el).closest('article, li, div');
@@ -411,7 +464,7 @@ const extractProductsFromHtml = ($) => {
         const price = toNumber(priceText);
         const image = $(el).find('img').attr('src') || $(el).find('img').attr('data-src') || null;
 
-        products.push({
+        pushProduct({
             title: title ? title.trim() : null,
             brand: null,
             price,
@@ -419,13 +472,12 @@ const extractProductsFromHtml = ($) => {
             currency: 'CAD',
             url,
             image: image ? toAbs(image) : null,
+            images: image ? [toAbs(image)] : [],
             colors: [],
             sizes: [],
             inStock: true,
             productId: null,
         });
-
-        seenLinks.add(url);
     });
 
     return products;
