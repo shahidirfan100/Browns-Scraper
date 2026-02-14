@@ -1,7 +1,7 @@
 {
   "actorSpecification": 1,
   "name": "browns-shoes-scraper",
-  "version": "1.0.0",
+  "version": "1.0",
   "buildTag": "latest",
   "dockerfile": "../Dockerfile",
   "readme": "../README.md",
@@ -12,6 +12,6 @@
     "dataset": "./dataset_schema.json"
   },
   "meta": {
-    "generatedBy": "GPT-5.2"
+    "generatedBy": "GPT-5 Codex"
   }
 }

@@ -1,13 +1,13 @@
 {
-  "title": "Browns Shoes Scraper",
-  "description": "Extract product listings from Browns Shoes. Specify category, filters, or provide custom URLs. Uses JSON API for speed, falls back to HTML parsing when needed.",
+  "title": "Browns Shoes API Scraper",
+  "description": "Extract product listings from Browns Shoes using the internal search API only. No DOM parsing and no detail-page crawling.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
     "startUrls": {
       "title": "Start URLs",
       "type": "array",
-      "description": "List of Browns Shoes URLs to scrape. If provided, category and filters are ignored.",
+      "description": "Optional Browns category URLs. The actor derives cgid/locale from each URL and scrapes those categories via API.",
       "editor": "requestListSources",
       "default": [],
       "prefill": [
@@ -19,7 +19,7 @@
     "category": {
       "title": "Category",
       "type": "string",
-      "description": "Product category to scrape (e.g., 'women', 'men', 'kids').",
+      "description": "Category to scrape when startUrls are not provided.",
       "editor": "select",
       "enum": [
         "women",
@@ -39,50 +39,47 @@
     "brand": {
       "title": "Brand Filter",
       "type": "string",
-      "description": "Filter products by brand (e.g., 'UGG', 'Adidas', 'New Balance').",
+      "description": "Optional brand filter (normalized to uppercase for API refine filter).",
       "editor": "textfield"
     },
     "maxItems": {
       "title": "Maximum Products",
       "type": "integer",
-      "description": "Maximum number of products to scrape.",
+      "description": "Maximum number of products to save.",
       "minimum": 1,
-      "default": 20,
-      "prefill": 20,
+      "default": 100,
+      "prefill": 100,
       "editor": "number"
     },
     "maxPages": {
       "title": "Maximum Pages",
       "type": "integer",
-      "description": "Maximum number of listing pages to process.",
+      "description": "Maximum number of API pages per category.",
       "minimum": 1,
       "default": 50,
       "prefill": 50,
       "editor": "number"
     },
-    "scrapeDetails": {
-      "title": "Scrape Detailed Information",
-      "type": "boolean",
-      "description": "If enabled, the scraper will visit each product page to extract full details (description, materials, etc.). If disabled, it runs much faster but only collects listing data.",
-      "default": false,
-      "prefill": false
+    "pageSize": {
+      "title": "Page Size",
+      "type": "integer",
+      "description": "Number of products fetched per API request.",
+      "minimum": 1,
+      "maximum": 200,
+      "default": 20,
+      "prefill": 20,
+      "editor": "number"
     },
     "proxyConfiguration": {
       "title": "Proxy Configuration",
       "type": "object",
-      "description": "Proxy settings for anti-blocking protection. Residential proxies recommended.",
+      "description": "Optional proxy settings. Leave disabled for local runs unless needed.",
       "editor": "proxy",
       "default": {
-        "useApifyProxy": true,
-        "apifyProxyGroups": [
-          "RESIDENTIAL"
-        ]
+        "useApifyProxy": false
       },
       "prefill": {
-        "useApifyProxy": true,
-        "apifyProxyGroups": [
-          "RESIDENTIAL"
-        ]
+        "useApifyProxy": false
       }
     }
   },

@@ -2,12 +2,9 @@
   "category": "women",
   "maxItems": 50,
   "maxPages": 5,
+  "pageSize": 20,
   "brand": "",
   "proxyConfiguration": {
-    "useApifyProxy": true,
-    "apifyProxyGroups": [
-      "RESIDENTIAL"
-    ]
-  },
-  "scrapeDetails": true
+    "useApifyProxy": false
+  }
 }
