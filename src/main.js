@@ -1,19 +1,15 @@
 import { Actor } from 'apify';
-import log from '@apify/log';
 import { gotScraping } from 'got-scraping';
 import { HeaderGenerator } from 'header-generator';
+
+import log from '@apify/log';
 
 const BASE_URL = 'https://www.brownsshoes.com';
 const ORG_ID = 'f_ecom_bftx_prd';
 const SITE_ID = 'BrownsShoes';
 const SEARCH_EXPAND = 'promotions,variations,prices,images,custom_properties,availability,page_meta_tags';
 
-const DEFAULTS = {
-    category: 'women',
-    maxItems: 100,
-    maxPages: 50,
-    pageSize: 20,
-};
+// Removed DEFAULTS to ensure user input priority via Actor.getInput() destructuring.
 
 const CATEGORY_TO_CGID = {
     women: '1',
@@ -29,7 +25,7 @@ const headerGenerator = new HeaderGenerator({
     locales: ['en-US'],
 });
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 const toNumber = (value) => {
     if (value === null || value === undefined || value === '') return null;
@@ -184,11 +180,12 @@ const buildTargets = (input) => {
         return deduped;
     }
 
-    const category = String(input.category || DEFAULTS.category).toLowerCase();
-    const cgid = CATEGORY_TO_CGID[category] || CATEGORY_TO_CGID[DEFAULTS.category];
+    const { category = 'women' } = input;
+    const normalizedCategory = String(category).toLowerCase();
+    const cgid = CATEGORY_TO_CGID[normalizedCategory] || CATEGORY_TO_CGID.women;
 
     return [{
-        label: category,
+        label: normalizedCategory,
         cgid,
         locale: 'en',
     }];
@@ -296,10 +293,18 @@ await Actor.init();
 try {
     const input = (await Actor.getInput()) || {};
 
-    const maxItems = Math.max(1, Number(input.maxItems) || DEFAULTS.maxItems);
-    const maxPages = Math.max(1, Number(input.maxPages) || DEFAULTS.maxPages);
-    const pageSize = Math.max(1, Math.min(200, Number(input.pageSize) || DEFAULTS.pageSize));
-    const brandFilter = normalizeBrandFilter(input.brand);
+    const {
+        // eslint-disable-next-line camelcase
+        results_wanted = 20,
+        maxPages = 5,
+        pageSize = 20,
+        brand,
+    } = input;
+
+    const maxItems = Math.max(1, results_wanted);
+    const finalMaxPages = Math.max(1, maxPages);
+    const finalPageSize = Math.max(1, Math.min(200, pageSize));
+    const brandFilter = normalizeBrandFilter(brand);
 
     const targets = buildTargets(input);
     if (targets.length === 0) {
@@ -316,7 +321,7 @@ try {
 
     const baseHeaders = headerGenerator.getHeaders();
 
-    log.info(`Starting API scrape for ${targets.length} target(s), maxItems=${maxItems}, maxPages=${maxPages}, pageSize=${pageSize}`);
+    log.info(`Starting API scrape for ${targets.length} target(s), maxItems=${maxItems}, maxPages=${finalMaxPages}, pageSize=${finalPageSize}`);
 
     let token = await fetchGuestToken({ proxyConfiguration, baseHeaders });
 
@@ -330,12 +335,12 @@ try {
 
         let offset = 0;
 
-        for (let page = 1; page <= maxPages && savedCount < maxItems; page += 1) {
+        for (let page = 1; page <= finalMaxPages && savedCount < maxItems; page += 1) {
             let pageResponse = await fetchSearchPage({
                 token,
                 target,
                 offset,
-                limit: pageSize,
+                limit: finalPageSize,
                 brand: brandFilter,
                 proxyConfiguration,
                 baseHeaders,
@@ -347,7 +352,7 @@ try {
                     token,
                     target,
                     offset,
-                    limit: pageSize,
+                    limit: finalPageSize,
                     brand: brandFilter,
                     proxyConfiguration,
                     baseHeaders,
@@ -388,11 +393,11 @@ try {
             log.info(`Target cgid=${target.cgid}, page=${page}, fetched=${hits.length}, saved=${mapped.length}, totalSaved=${savedCount}`);
 
             const total = Number(payload?.total);
-            if (Number.isFinite(total) && offset + pageSize >= total) {
+            if (Number.isFinite(total) && offset + finalPageSize >= total) {
                 break;
             }
 
-            offset += pageSize;
+            offset += finalPageSize;
             await sleep(300 + Math.floor(Math.random() * 350));
         }
     }

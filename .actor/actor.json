@@ -3,6 +3,8 @@
   "name": "browns-shoes-scraper",
   "version": "1.0",
   "buildTag": "latest",
+  "minMemoryMbytes": 512,
+  "maxMemoryMbytes": 1024,
   "dockerfile": "../Dockerfile",
   "readme": "../README.md",
   "input": "./input_schema.json",
@@ -10,8 +12,5 @@
   "nodeJsVersion": "22",
   "storages": {
     "dataset": "./dataset_schema.json"
-  },
-  "meta": {
-    "generatedBy": "GPT-5 Codex"
   }
 }

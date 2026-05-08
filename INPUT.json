@@ -1,6 +1,6 @@
 {
   "category": "women",
-  "maxItems": 50,
+  "results_wanted": 20,
   "maxPages": 5,
   "pageSize": 20,
   "brand": "",
