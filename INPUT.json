@@ -1,10 +1,9 @@
 {
-  "category": "women",
-  "results_wanted": 20,
-  "maxPages": 5,
-  "pageSize": 20,
-  "brand": "",
-  "proxyConfiguration": {
-    "useApifyProxy": false
-  }
+    "category": "women",
+    "results_wanted": 20,
+    "maxPages": 5,
+    "brand": "",
+    "proxyConfiguration": {
+        "useApifyProxy": false
+    }
 }

@@ -1,165 +1,194 @@
 import { Actor } from 'apify';
-import { gotScraping } from 'got-scraping';
-import { HeaderGenerator } from 'header-generator';
+import { Impit } from 'impit';
 
 import log from '@apify/log';
 
 const BASE_URL = 'https://www.brownsshoes.com';
-const ORG_ID = 'f_ecom_bftx_prd';
-const SITE_ID = 'BrownsShoes';
-const SEARCH_EXPAND = 'promotions,variations,prices,images,custom_properties,availability,page_meta_tags';
-
-// Removed DEFAULTS to ensure user input priority via Actor.getInput() destructuring.
-
-const CATEGORY_TO_CGID = {
-    women: '1',
-    men: '2',
-    kids: '4',
+const CATEGORY_TO_COLLECTION = {
+    women: 'women',
+    men: 'men',
+    kids: 'kids',
     sale: 'sale',
 };
+const LEGACY_CGID_TO_COLLECTION = {
+    1: 'women',
+    2: 'men',
+    4: 'kids',
+    sale: 'sale',
+};
+const CATEGORY_ALIASES = {
+    femmes: 'women',
+    hommes: 'men',
+    enfants: 'kids',
+    solde: 'sale',
+    soldes: 'sale',
+};
+const MAX_RETRIES = 3;
+const REQUEST_TIMEOUT_MS = 30000;
+const MAX_RETRY_AFTER_MS = 10000;
+const PAGE_SIZE = 20;
 
-const headerGenerator = new HeaderGenerator({
-    browsers: [{ name: 'chrome', minVersion: 120, maxVersion: 132 }],
-    devices: ['desktop'],
-    operatingSystems: ['windows', 'macos', 'linux'],
-    locales: ['en-US'],
-});
+const sleep = (ms) =>
+    new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
 
-const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+const uniqStrings = (values) => [
+    ...new Set(
+        (values || [])
+            .filter((value) => value !== null && value !== undefined)
+            .map((value) => String(value).trim())
+            .filter(Boolean),
+    ),
+];
 
 const toNumber = (value) => {
     if (value === null || value === undefined || value === '') return null;
     const normalized = String(value).replace(/[^\d.]/g, '');
+    if (!normalized) return null;
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : null;
 };
 
-const uniqStrings = (values) => [...new Set((values || []).filter(Boolean).map((v) => String(v).trim()).filter(Boolean))];
-
-const toAbsoluteUrl = (url) => {
-    if (!url) return null;
+const toAbsoluteUrl = (value) => {
+    if (!value || typeof value !== 'string') return null;
     try {
-        return new URL(url, BASE_URL).href;
+        return new URL(value, BASE_URL).href;
     } catch {
         return null;
     }
-};
-
-const normalizeProductUrl = (url) => {
-    if (!url) return null;
-    try {
-        const absolute = new URL(url, BASE_URL);
-        absolute.search = '';
-        absolute.hash = '';
-        return absolute.href;
-    } catch {
-        return null;
-    }
-};
-
-const getVariationValues = (attributes, ids) => {
-    const lookup = new Set(ids.map((id) => id.toLowerCase()));
-    const values = [];
-
-    for (const attribute of attributes || []) {
-        const attrId = String(attribute?.id || '').toLowerCase();
-        if (!lookup.has(attrId)) continue;
-
-        for (const value of attribute?.values || []) {
-            if (typeof value?.name === 'string') values.push(value.name);
-            if (typeof value?.value === 'string') values.push(value.value);
-            if (typeof value?.name?.en === 'string') values.push(value.name.en);
-        }
-    }
-
-    return uniqStrings(values);
-};
-
-const mapSearchHit = (hit) => {
-    if (!hit || typeof hit !== 'object') return null;
-
-    const productUrl = normalizeProductUrl(hit.c_productUrl || hit.productUrl || hit.url || hit.link);
-    const title = hit.productName || hit.name || null;
-    if (!productUrl || !title) return null;
-
-    const variationAttributes = hit.c_variationAttributes || hit.variationAttributes || [];
-    const representedProduct = hit.representedProduct || {};
-
-    const image = toAbsoluteUrl(
-        hit?.image?.link
-        || hit?.image?.src
-        || hit?.imageGroups?.[0]?.images?.[0]?.link
-        || hit?.imageGroups?.[0]?.images?.[0]?.src,
-    );
-
-    const images = uniqStrings(
-        (hit.imageGroups || []).flatMap((group) => (group?.images || []).map((img) => img?.link || img?.src)),
-    ).map((url) => toAbsoluteUrl(url));
-
-    const price = toNumber(hit.price ?? hit.pricePerUnit ?? hit.priceMin ?? hit.pricePerUnitMin);
-    const priceMax = toNumber(hit.priceMax ?? hit.pricePerUnitMax);
-
-    return {
-        title,
-        brand: hit.c_brand || hit.brand?.name || hit.brand || null,
-        price,
-        originalPrice: priceMax && price && priceMax > price ? priceMax : null,
-        currency: hit.currency || 'CAD',
-        url: productUrl,
-        image,
-        images,
-        colors: getVariationValues(variationAttributes, ['color', 'colour']),
-        sizes: getVariationValues(variationAttributes, ['size']),
-        inStock: hit.orderable ?? (representedProduct?.c_qtyInStock > 0),
-        productId: hit.productId || representedProduct?.id || null,
-        description: representedProduct?.c_productDescription || null,
-    };
 };
 
 const normalizeBrandFilter = (brand) => {
-    if (!brand || typeof brand !== 'string') return null;
-    const value = brand.trim();
-    if (!value) return null;
-    return value.toUpperCase();
+    if (typeof brand !== 'string') return null;
+    const normalized = brand.trim().toLocaleLowerCase('en-CA');
+    return normalized || null;
+};
+
+const getTagValue = (tags, tagName) => {
+    const prefix = `${tagName}:`.toLocaleLowerCase('en-CA');
+    const match = (tags || []).find(
+        (tag) => typeof tag === 'string' && tag.toLocaleLowerCase('en-CA').startsWith(prefix),
+    );
+    return match ? match.slice(match.indexOf(':') + 1).trim() || null : null;
+};
+
+const decodeHtmlEntities = (value) =>
+    value.replace(/&(#x[\da-f]+|#\d+|[a-z]+);/gi, (entity, code) => {
+        if (code.startsWith('#x') || code.startsWith('#X')) {
+            const parsed = Number.parseInt(code.slice(2), 16);
+            return parsed <= 0x10ffff ? String.fromCodePoint(parsed) : entity;
+        }
+        if (code.startsWith('#')) {
+            const parsed = Number.parseInt(code.slice(1), 10);
+            return parsed <= 0x10ffff ? String.fromCodePoint(parsed) : entity;
+        }
+
+        const entities = {
+            amp: '&',
+            apos: "'",
+            gt: '>',
+            lt: '<',
+            nbsp: ' ',
+            quot: '"',
+        };
+        return entities[code.toLowerCase()] || entity;
+    });
+
+const htmlToText = (html) => {
+    if (typeof html !== 'string' || !html.trim()) return null;
+    return (
+        decodeHtmlEntities(
+            html
+                .replace(/<\s*br\s*\/?>/gi, ' ')
+                .replace(/<\/(p|div|li|h[1-6])\s*>/gi, ' ')
+                .replace(/<[^>]*>/g, ' '),
+        )
+            .replace(/\s+/g, ' ')
+            .trim() || null
+    );
+};
+
+const getOptionValues = (product, optionName) => {
+    const option = (product.options || []).find(
+        (item) => typeof item?.name === 'string' && item.name.toLocaleLowerCase('en-CA').includes(optionName),
+    );
+    return Array.isArray(option?.values) ? option.values : [];
+};
+
+const mapShopifyProduct = (product) => {
+    if (!product || typeof product !== 'object' || !product.handle || !product.title) return null;
+
+    const variants = Array.isArray(product.variants) ? product.variants : [];
+    const prices = variants.map((variant) => toNumber(variant?.price)).filter((price) => price !== null);
+    const price = prices.length > 0 ? Math.min(...prices) : null;
+    const compareAtPrices = variants
+        .map((variant) => toNumber(variant?.compare_at_price))
+        .filter((compareAtPrice) => compareAtPrice !== null && (price === null || compareAtPrice > price));
+    const originalPrice = compareAtPrices.length > 0 ? Math.max(...compareAtPrices) : null;
+
+    const imageUrls = uniqStrings(
+        (Array.isArray(product.images) ? product.images : []).map((image) => image?.src || image?.url),
+    )
+        .map(toAbsoluteUrl)
+        .filter(Boolean);
+    const primaryImage = toAbsoluteUrl(product.image?.src || product.image?.url);
+    if (imageUrls.length === 0 && primaryImage) imageUrls.push(primaryImage);
+
+    const tags = Array.isArray(product.tags) ? product.tags : [];
+    const colorValues = [getTagValue(tags, 'Color'), ...getOptionValues(product, 'color')];
+    const sizeValues = getOptionValues(product, 'size');
+    const sizes =
+        sizeValues.length > 0
+            ? sizeValues
+            : variants.map((variant) => (variant?.title === 'Default Title' ? null : variant?.title));
+    const productPath = `/products/${encodeURIComponent(product.handle)}`;
+
+    return {
+        title: product.title,
+        brand: product.vendor || null,
+        price,
+        originalPrice,
+        currency: 'CAD',
+        url: new URL(productPath, BASE_URL).href,
+        image: imageUrls[0] || primaryImage || null,
+        images: imageUrls,
+        colors: uniqStrings(colorValues),
+        sizes: uniqStrings(sizes),
+        inStock: variants.some((variant) => variant?.available === true),
+        productId: getTagValue(tags, 'Product ID') || (product.id ? String(product.id) : null),
+        description: htmlToText(product.body_html),
+    };
 };
 
 const parseStartUrlTarget = (startUrl) => {
-    const rawUrl = startUrl?.url || startUrl;
-    if (!rawUrl || typeof rawUrl !== 'string') return null;
+    const rawUrl = typeof startUrl === 'string' ? startUrl : startUrl?.url;
+    if (typeof rawUrl !== 'string' || !rawUrl.trim()) return null;
 
     try {
-        const url = new URL(rawUrl);
+        const url = new URL(rawUrl, BASE_URL);
+        if (url.protocol !== 'https:' || !['brownsshoes.com', 'www.brownsshoes.com'].includes(url.hostname))
+            return null;
+
         const segments = url.pathname.toLowerCase().split('/').filter(Boolean);
-
         const locale = segments[0] === 'fr' ? 'fr' : 'en';
+        const cgid = url.searchParams.get('cgid');
+        const cgidCollection = cgid ? LEGACY_CGID_TO_COLLECTION[cgid.toLowerCase()] : null;
+        if (cgidCollection) return { collection: cgidCollection, locale };
 
-        const cgidParam = url.searchParams.get('cgid');
-        if (cgidParam) {
-            return {
-                label: rawUrl,
-                cgid: cgidParam,
-                locale,
-            };
+        const collectionIndex = segments.indexOf('collections');
+        if (collectionIndex >= 0 && segments[collectionIndex + 1]) {
+            return { collection: segments[collectionIndex + 1], locale };
         }
 
-        const hasAny = (...values) => values.some((value) => segments.includes(value));
-
-        let cgid = null;
-        if (hasAny('women', 'femmes')) cgid = '1';
-        else if (hasAny('men', 'hommes')) cgid = '2';
-        else if (hasAny('kids', 'enfants')) cgid = '4';
-        else if (hasAny('sale', 'solde')) cgid = 'sale';
-
-        if (!cgid) return null;
-
-        return {
-            label: rawUrl,
-            cgid,
-            locale,
-        };
+        const categoryAliases = { ...CATEGORY_TO_COLLECTION, ...CATEGORY_ALIASES };
+        const categorySegment = segments.find((segment) => categoryAliases[segment]);
+        if (categorySegment) return { collection: categoryAliases[categorySegment], locale };
     } catch {
         return null;
     }
+
+    return null;
 };
 
 const buildTargets = (input) => {
@@ -167,163 +196,164 @@ const buildTargets = (input) => {
 
     if (startUrls.length > 0) {
         const targets = startUrls.map(parseStartUrlTarget).filter(Boolean);
-        const deduped = [];
+        if (targets.length !== startUrls.length) {
+            log.warning(
+                'One or more start URLs were ignored because they are not supported Browns Shoes collection URLs.',
+            );
+        }
+
         const seen = new Set();
-
-        for (const target of targets) {
-            const key = `${target.locale}:${target.cgid}`;
-            if (seen.has(key)) continue;
+        return targets.filter((target) => {
+            const key = `${target.locale}:${target.collection}`;
+            if (seen.has(key)) return false;
             seen.add(key);
-            deduped.push(target);
-        }
-
-        return deduped;
-    }
-
-    const { category = 'women' } = input;
-    const normalizedCategory = String(category).toLowerCase();
-    const cgid = CATEGORY_TO_CGID[normalizedCategory] || CATEGORY_TO_CGID.women;
-
-    return [{
-        label: normalizedCategory,
-        cgid,
-        locale: 'en',
-    }];
-};
-
-const resolveProxyUrl = async (proxyConfiguration) => {
-    if (!proxyConfiguration) return undefined;
-
-    try {
-        return await proxyConfiguration.newUrl();
-    } catch (error) {
-        log.warning(`Proxy URL generation failed, continuing without proxy: ${error.message}`);
-        return undefined;
-    }
-};
-
-const fetchGuestToken = async ({ proxyConfiguration, baseHeaders }) => {
-    const endpoint = `${BASE_URL}/mobify/slas/private/shopper/auth/v1/organizations/${ORG_ID}/oauth2/token`;
-    const body = `grant_type=client_credentials&channel_id=${SITE_ID}`;
-
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-        const proxyUrl = await resolveProxyUrl(proxyConfiguration);
-
-        const response = await gotScraping({
-            url: endpoint,
-            method: 'POST',
-            proxyUrl,
-            throwHttpErrors: false,
-            responseType: 'json',
-            timeout: { request: 30000 },
-            retry: { limit: 0 },
-            headers: {
-                ...baseHeaders,
-                Accept: 'application/json,text/plain,*/*',
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body,
+            return true;
         });
-
-        if (response.statusCode === 200 && response.body?.access_token) {
-            return response.body.access_token;
-        }
-
-        const isRetriable = response.statusCode >= 500 || response.statusCode === 429;
-        if (!isRetriable || attempt === 3) {
-            const detail = response.body?.detail || response.body?.message || `HTTP ${response.statusCode}`;
-            throw new Error(`Failed to obtain guest token: ${detail}`);
-        }
-
-        await sleep(400 * attempt);
     }
 
-    throw new Error('Failed to obtain guest token');
+    const category = String(input.category ?? 'women')
+        .trim()
+        .toLowerCase();
+    const collection = CATEGORY_TO_COLLECTION[category];
+    if (!collection) {
+        throw new Error(`Unsupported category '${category}'. Choose women, men, kids, or sale.`);
+    }
+
+    return [{ collection, locale: 'en' }];
 };
 
-const fetchSearchPage = async ({ token, target, offset, limit, brand, proxyConfiguration, baseHeaders }) => {
-    const searchParams = new URLSearchParams({
-        siteId: SITE_ID,
-        locale: target.locale,
-        limit: String(limit),
-        offset: String(offset),
-        expand: SEARCH_EXPAND,
-        allImages: 'true',
-        perPricebook: 'true',
-        allVariationProperties: 'true',
-    });
+const retryAfterMs = (response) => {
+    const value = response.headers.get('retry-after');
+    if (!value) return null;
 
-    searchParams.append('refine', `cgid=${target.cgid}`);
-    if (brand) searchParams.append('refine', `c_brand=${brand}`);
+    const seconds = Number(value);
+    const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - Date.now();
+    if (!Number.isFinite(delay)) return null;
+    return Math.min(MAX_RETRY_AFTER_MS, Math.max(0, delay));
+};
 
-    const url = `${BASE_URL}/mobify/proxy/api/search/shopper-search/v1/organizations/${ORG_ID}/product-search?${searchParams.toString()}`;
-    const proxyUrl = await resolveProxyUrl(proxyConfiguration);
+const retryDelayMs = (attempt) => 400 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250);
 
-    const response = await gotScraping({
-        url,
-        proxyUrl,
-        throwHttpErrors: false,
-        responseType: 'json',
-        timeout: { request: 30000 },
-        retry: { limit: 0 },
-        headers: {
-            ...baseHeaders,
-            Accept: 'application/json,text/plain,*/*',
-            Authorization: `Bearer ${token}`,
-        },
-    });
+const fetchCollectionPage = async ({ client, target, page }) => {
+    const localePath = target.locale === 'fr' ? '/fr' : '';
+    const endpoint = new URL(
+        `${localePath}/collections/${encodeURIComponent(target.collection)}/products.json`,
+        BASE_URL,
+    );
+    endpoint.searchParams.set('limit', String(PAGE_SIZE));
+    endpoint.searchParams.set('page', String(page));
 
-    if (response.statusCode === 401) {
-        return { unauthorized: true };
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
+        let response;
+        try {
+            response = await client.fetch(endpoint.href, {
+                signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+            });
+        } catch (error) {
+            if (attempt === MAX_RETRIES) {
+                throw new Error(`Shopify request failed for collection '${target.collection}': ${error.message}`);
+            }
+            const delay = retryDelayMs(attempt);
+            log.warning(
+                `Temporary request failure for collection '${target.collection}', retry ${attempt}/${MAX_RETRIES - 1} in ${delay}ms.`,
+            );
+            await sleep(delay);
+            continue;
+        }
+
+        if (!response.ok) {
+            const temporary = response.status === 429 || response.status >= 500;
+            if (!temporary || attempt === MAX_RETRIES) {
+                throw new Error(
+                    `Shopify collection request failed for '${target.collection}': HTTP ${response.status}`,
+                );
+            }
+            const delay = retryAfterMs(response) ?? retryDelayMs(attempt);
+            log.warning(
+                `Temporary HTTP ${response.status} for collection '${target.collection}', retry ${attempt}/${MAX_RETRIES - 1} in ${delay}ms.`,
+            );
+            await sleep(delay);
+            continue;
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        if (!contentType.toLowerCase().includes('json')) {
+            throw new Error(`Shopify collection '${target.collection}' returned a non-JSON response.`);
+        }
+
+        let payload;
+        try {
+            payload = await response.json();
+        } catch {
+            throw new Error(`Shopify collection '${target.collection}' returned invalid JSON.`);
+        }
+        if (!payload || !Array.isArray(payload.products)) {
+            throw new Error(`Shopify collection '${target.collection}' returned an unexpected JSON structure.`);
+        }
+
+        return payload.products;
     }
 
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-        const detail = response.body?.detail || response.body?.message || `HTTP ${response.statusCode}`;
-        throw new Error(`Search API request failed: ${detail}`);
-    }
-
-    return {
-        unauthorized: false,
-        data: response.body,
-    };
+    throw new Error(`Shopify request retries exhausted for collection '${target.collection}'.`);
 };
 
 await Actor.init();
 
 try {
     const input = (await Actor.getInput()) || {};
-
     const {
-        // eslint-disable-next-line camelcase
-        results_wanted = 20,
-        maxPages = 5,
-        pageSize = 20,
+        results_wanted: resultsWantedInput = 20,
+        maxPages: maxPagesInput = 5,
+
         brand,
     } = input;
 
-    const maxItems = Math.max(1, results_wanted);
-    const finalMaxPages = Math.max(1, maxPages);
-    const finalPageSize = Math.max(1, Math.min(200, pageSize));
-    const brandFilter = normalizeBrandFilter(brand);
+    const normalizePositiveInteger = (value, name, maximum = Number.MAX_SAFE_INTEGER) => {
+        const parsed = Number(value);
+        if (!Number.isInteger(parsed) || parsed < 1) {
+            throw new Error(`'${name}' must be a positive integer.`);
+        }
+        return Math.min(parsed, maximum);
+    };
 
+    const maxItems = normalizePositiveInteger(resultsWantedInput, 'results_wanted');
+    const maxPages = normalizePositiveInteger(maxPagesInput, 'maxPages');
+
+    const brandFilter = normalizeBrandFilter(brand);
     const targets = buildTargets(input);
     if (targets.length === 0) {
-        throw new Error('No valid category targets found. Provide a supported category or valid Browns start URLs.');
+        throw new Error('No valid Browns Shoes collection targets found. Use a supported category or collection URL.');
     }
 
+    const proxyInput = input.proxyConfiguration || {};
+    const shouldUseApifyProxy = Boolean(proxyInput.useApifyProxy);
+    const hasCustomProxyUrls = Array.isArray(proxyInput.proxyUrls) && proxyInput.proxyUrls.length > 0;
     let proxyConfiguration;
-    try {
-        proxyConfiguration = await Actor.createProxyConfiguration(input.proxyConfiguration);
-    } catch (error) {
-        proxyConfiguration = undefined;
-        log.warning(`Proxy configuration is invalid, continuing without proxy: ${error.message}`);
+    if (hasCustomProxyUrls || (Actor.isAtHome() && shouldUseApifyProxy)) {
+        try {
+            proxyConfiguration = await Actor.createProxyConfiguration(proxyInput);
+        } catch (error) {
+            log.warning(`Proxy configuration is invalid, continuing without proxy: ${error.message}`);
+        }
     }
 
-    const baseHeaders = headerGenerator.getHeaders();
+    let proxyUrl;
+    if (proxyConfiguration) {
+        try {
+            proxyUrl = await proxyConfiguration.newUrl();
+        } catch (error) {
+            log.warning(`Proxy URL generation failed, continuing without proxy: ${error.message}`);
+        }
+    }
 
-    log.info(`Starting API scrape for ${targets.length} target(s), maxItems=${maxItems}, maxPages=${finalMaxPages}, pageSize=${finalPageSize}`);
+    const client = new Impit({
+        browser: 'chrome',
+        ...(proxyUrl ? { proxyUrl } : {}),
+    });
 
-    let token = await fetchGuestToken({ proxyConfiguration, baseHeaders });
+    log.info(
+        `Starting product scrape for ${targets.length} collection(s), maxItems=${maxItems}, maxPages=${maxPages}, batchSize=${PAGE_SIZE}`,
+    );
 
     let savedCount = 0;
     const seen = new Set();
@@ -331,54 +361,24 @@ try {
     for (const target of targets) {
         if (savedCount >= maxItems) break;
 
-        log.info(`Scraping target: cgid=${target.cgid}, locale=${target.locale}`);
+        log.info(`Scraping collection '${target.collection}'${target.locale === 'fr' ? ' (French)' : ''}`);
 
-        let offset = 0;
-
-        for (let page = 1; page <= finalMaxPages && savedCount < maxItems; page += 1) {
-            let pageResponse = await fetchSearchPage({
-                token,
-                target,
-                offset,
-                limit: finalPageSize,
-                brand: brandFilter,
-                proxyConfiguration,
-                baseHeaders,
-            });
-
-            if (pageResponse.unauthorized) {
-                token = await fetchGuestToken({ proxyConfiguration, baseHeaders });
-                pageResponse = await fetchSearchPage({
-                    token,
-                    target,
-                    offset,
-                    limit: finalPageSize,
-                    brand: brandFilter,
-                    proxyConfiguration,
-                    baseHeaders,
-                });
-            }
-
-            if (pageResponse.unauthorized) {
-                throw new Error('Search API remains unauthorized after token refresh.');
-            }
-
-            const payload = pageResponse.data;
-            const hits = Array.isArray(payload?.hits) ? payload.hits : [];
-
-            if (hits.length === 0) {
-                log.info(`No more products for cgid=${target.cgid} at page ${page}`);
+        for (let page = 1; page <= maxPages && savedCount < maxItems; page += 1) {
+            const products = await fetchCollectionPage({ client, target, page });
+            if (products.length === 0) {
+                log.info(`No more products for collection '${target.collection}' at page ${page}`);
                 break;
             }
 
             const mapped = [];
-            for (const hit of hits) {
-                const item = mapSearchHit(hit);
+            for (const product of products) {
+                if (brandFilter && normalizeBrandFilter(product?.vendor) !== brandFilter) continue;
+
+                const item = mapShopifyProduct(product);
                 if (!item) continue;
 
                 const key = item.url || item.productId;
                 if (!key || seen.has(key)) continue;
-
                 seen.add(key);
                 mapped.push(item);
 
@@ -390,15 +390,14 @@ try {
                 savedCount += mapped.length;
             }
 
-            log.info(`Target cgid=${target.cgid}, page=${page}, fetched=${hits.length}, saved=${mapped.length}, totalSaved=${savedCount}`);
+            log.info(
+                `Collection '${target.collection}', page=${page}, fetched=${products.length}, saved=${mapped.length}, totalSaved=${savedCount}`,
+            );
 
-            const total = Number(payload?.total);
-            if (Number.isFinite(total) && offset + finalPageSize >= total) {
-                break;
+            if (products.length < PAGE_SIZE) break;
+            if (page < maxPages && savedCount < maxItems) {
+                await sleep(300 + Math.floor(Math.random() * 350));
             }
-
-            offset += finalPageSize;
-            await sleep(300 + Math.floor(Math.random() * 350));
         }
     }
 

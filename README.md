@@ -1,212 +1,177 @@
-# Browns Shoes Scraper
+## What does Browns Shoes Scraper do?
 
-Extract comprehensive product data from Browns Shoes with ease. Collect detailed listings including brands, pricing, images, and availability at scale. Perfect for retail research, price monitoring, and competitive analysis.
+Browns Shoes Scraper collects product listings from Browns Shoes categories and collections. Choose a category such as women, men, kids, or sale, or provide one or more Browns Shoes collection URLs. The dataset includes product names, brands, current and original prices, images, colors, sizes, availability, product links, and descriptions for retail research and price monitoring.
 
----
+## Why use Browns Shoes Scraper?
 
-## Features
+- **Product research** - Review Browns Shoes products and brands without copying listings by hand.
+- **Price monitoring** - Compare current prices with original prices when a discount is listed.
+- **Inventory checks** - Track whether products have at least one available variant.
+- **Repeatable collection** - Set result limits, page depth, brand filters, and optional proxy settings, then run on demand or schedule through Apify.
 
-- **Comprehensive Data** — Capture product names, brands, prices, images, colors, and stock status.
-- **Flexible Filtering** — Narrow down results by category, brand, and custom start URLs.
-- **Smart Pagination** — Automatically navigates through result pages to reach your desired count.
-- **High Performance** — Optimized for speed and efficiency using direct data sources.
-- **Global Reach** — Supports both English and French versions of the Browns Shoes platform.
+## What data can you extract from Browns Shoes?
 
----
+| Field           | Type           | Description                                             |
+| --------------- | -------------- | ------------------------------------------------------- |
+| `title`         | String         | Product name and model                                  |
+| `brand`         | String         | Product brand                                           |
+| `price`         | Number or null | Lowest current variant price                            |
+| `originalPrice` | Number or null | Highest listed compare-at price above the current price |
+| `currency`      | String         | Store currency, reported as CAD                         |
+| `url`           | String         | Canonical product page URL                              |
+| `image`         | String or null | Primary product image URL                               |
+| `images`        | Array          | Product image URLs                                      |
+| `colors`        | Array          | Product color values                                    |
+| `sizes`         | Array          | Product size values                                     |
+| `inStock`       | Boolean        | Whether any product variant is available                |
+| `productId`     | String or null | Browns product ID when available                        |
+| `description`   | String or null | Product description text                                |
 
-## Use Cases
+## How to use Browns Shoes Scraper
 
-### Retail Market Intelligence
-Analyze shoe assortments, track brand presence, and monitor new arrivals across different categories. Understand market trends and product variety in real-time.
-
-### Competitive Price Monitoring
-Track price fluctuations, original vs. sale prices, and discount patterns. Build datasets for price comparison and benchmarking against other retailers.
-
-### Inventory and Availability Tracking
-Monitor stock levels and size availability for specific brands or categories. Identify popular items and restocking patterns across the entire catalog.
-
----
+1. Choose a category or enter one or more collection URLs.
+2. Set the maximum number of products and pages to collect.
+3. Optionally filter the results by brand or configure a proxy.
+4. Run the Actor and review the dataset.
+5. Export results as JSON, CSV, Excel, XML, or connect the dataset to another Apify integration.
 
 ## Input Parameters
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `startUrls` | Array | No | `[]` | Optional Browns category URLs to scrape. |
-| `category` | String | No | `"women"` | Category to scrape: `women`, `men`, `kids`, or `sale`. |
-| `brand` | String | No | — | Optional brand filter (e.g., "UGG", "Adidas"). |
-| `maxItems` | Integer | No | `20` | Maximum number of products to save. |
-| `maxPages` | Integer | No | `5` | Maximum number of result pages to process per category. |
-| `pageSize` | Integer | No | `20` | Number of products fetched per request (max 200). |
-| `proxyConfiguration` | Object | No | — | Optional proxy settings for reliable extraction. |
+| Parameter        | Type    | Required | Default | Description                                                                                                                                                                                                         |
+| ---------------- | ------- | -------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `startUrls`      | Array   | No       | `[]`    | Browns Shoes collection URLs. When supplied, these take precedence over `category`. Use URLs such as `https://www.brownsshoes.com/collections/womens-boots`. A French collection can use a `/fr/collections/` path. |
+| `category`       | String  | No       | `women` | Category to collect when `startUrls` is empty: `women`, `men`, `kids`, or `sale`.                                                                                                                                   |
+| `brand`          | String  | No       | -       | Optional case-insensitive brand filter, such as `UGG` or `Adidas`.                                                                                                                                                  |
+| `results_wanted` | Integer | No       | `20`    | Maximum number of products to save across all selected collections.                                                                                                                                                 |
+| `maxPages`       | Integer | No       | `5`     | Maximum number of collection pages to read for each target.                                                                                                                                                         |
 
----
-
-## Output Data
-
-Each item in the dataset contains:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `title` | String | Product name and model |
-| `brand` | String | Manufacturer or brand name |
-| `price` | Number | Current selling price |
-| `originalPrice` | Number | Regular price before discounts |
-| `currency` | String | Price currency (e.g., CAD) |
-| `url` | String | Direct link to the product page |
-| `image` | String | Primary product image URL |
-| `images` | Array | List of all available product image URLs |
-| `colors` | Array | Available color options |
-| `sizes` | Array | Available size options |
-| `inStock` | Boolean | Availability status |
-| `productId` | String | Unique product identifier |
-| `description` | String | Short product description |
-
----
+| `proxyConfiguration` | Object | No | Disabled | Optional Apify Proxy or custom proxy settings. |
 
 ## Usage Examples
 
-### Basic Category Scrape
+### Collect women's products
 
-Extract the latest products from the Women's category:
+Collect up to 50 products from the default women's collection:
 
 ```json
 {
     "category": "women",
-    "maxItems": 50
+    "results_wanted": 50
 }
 ```
 
-### Brand-Specific Extraction
+### Collect from specific collections
 
-Collect products from a specific brand with custom pagination:
+Use current Browns Shoes collection links to target subcategories:
+
+```json
+{
+    "startUrls": [
+        { "url": "https://www.brownsshoes.com/collections/womens-boots" },
+        { "url": "https://www.brownsshoes.com/collections/mens-sneakers" }
+    ],
+    "results_wanted": 100,
+    "maxPages": 5
+}
+```
+
+### Filter by brand
+
+Collect Adidas products from the men's category. Increase `maxPages` if the brand is not present near the beginning of the collection:
 
 ```json
 {
     "category": "men",
     "brand": "Adidas",
-    "maxItems": 100,
-    "pageSize": 50
+    "results_wanted": 100,
+    "maxPages": 25
 }
 ```
-
-### Multiple Categories via URLs
-
-Scrape multiple specific categories using direct URLs:
-
-```json
-{
-    "startUrls": [
-        { "url": "https://www.brownsshoes.com/en/women/shoes/boots" },
-        { "url": "https://www.brownsshoes.com/en/men/shoes/sneakers" }
-    ],
-    "maxItems": 200
-}
-```
-
----
 
 ## Sample Output
 
 ```json
 {
-    "title": "CLASSIC ULTRA MINI",
-    "brand": "UGG",
-    "price": 175,
-    "originalPrice": null,
+    "title": "NEW BALANCE | 327 | TAUPE | WOMEN",
+    "brand": "NEW BALANCE",
+    "price": 109.98,
+    "originalPrice": 130,
     "currency": "CAD",
-    "url": "https://www.brownsshoes.com/en/women/shoes/boots/277259.html",
-    "image": "https://www.brownsshoes.com/dw/image/v2/BFTX_PRD/on/demandware.static/-/Sites-BrownsShoes-Master/default/dw1578e94d/images/277259_1.jpg",
+    "url": "https://www.brownsshoes.com/products/new-balance-327-angora-silver-metallic-women",
+    "image": "https://cdn.shopify.com/s/files/1/0840/2350/9228/files/282799_1.jpg?v=1790240795",
     "images": [
-        "https://www.brownsshoes.com/dw/image/v2/BFTX_PRD/on/demandware.static/-/Sites-BrownsShoes-Master/default/dw1578e94d/images/277259_1.jpg",
-        "https://www.brownsshoes.com/dw/image/v2/BFTX_PRD/on/demandware.static/-/Sites-BrownsShoes-Master/default/dw7695349e/images/277259_2.jpg"
+        "https://cdn.shopify.com/s/files/1/0840/2350/9228/files/282799_1.jpg?v=1790240795",
+        "https://cdn.shopify.com/s/files/1/0840/2350/9228/files/282799_5.jpg?v=1790240795"
     ],
-    "colors": [
-        "Chestnut",
-        "Black",
-        "Grey"
-    ],
-    "sizes": [
-        "5",
-        "6",
-        "7",
-        "8",
-        "9",
-        "10"
-    ],
+    "colors": ["ANGORA/SILVER METALLIC"],
+    "sizes": ["5", "5.5", "6", "6.5", "7", "7.5", "8", "8.5", "9", "9.5", "10", "11", "12"],
     "inStock": true,
-    "productId": "277259",
-    "description": "The Classic Ultra Mini updates our most iconic silhouette with a lower shaft height, adding easy on-off and enhanced versatility."
+    "productId": "282799",
+    "description": "Taking inspiration from the 70s era, the 327 is a re-energized silhouette that boldly reshapes classic elements for a thoroughly contemporary look. Featuring angular reworking, this runner has an asymmetrically placed letter N branding and wraparound trail-inspired lug outsole for extra grip."
 }
 ```
 
----
-
 ## Tips for Best Results
 
-### Use Residential Proxies
-- Residential proxies are recommended for high-volume scraping to ensure reliability.
-- They help avoid rate limits and ensure consistent access to data.
-
-### Optimize Result Count
-- Start with a small `maxItems` (e.g., 20-50) for testing.
-- Increase the count once you've verified the output meets your needs.
-
-### Leveraging Start URLs
-- Use `startUrls` when you want to scrape specific sub-categories or filtered pages.
-- The scraper automatically detects the category and locale from the URL.
-
----
+- Start with a modest `results_wanted` value to review the dataset before larger runs.
+- Use a current `/collections/{handle}` URL for a specific subcategory.
+- Use `maxPages` to allow more results when filtering for a brand that appears later in a collection.
+- The `brand` filter matches the product's brand name and is not a Shopify collection URL filter.
+- Product prices, availability, color, size, and descriptions reflect the listing data available when the Actor runs. A product may have no `originalPrice` if the store does not list a compare-at price.
+- Use Apify schedules to repeat collection runs, and export datasets as JSON, CSV, Excel, or XML for further analysis.
 
 ## Integrations
 
-Connect your data with:
-
-- **Google Sheets** — Export for analysis
-- **Airtable** — Build searchable databases
-- **Slack** — Get notifications
-- **Webhooks** — Send to custom endpoints
-- **Make** — Create automated workflows
-
-### Export Formats
-
-- **JSON** — For developers and APIs
-- **CSV** — For spreadsheet analysis
-- **Excel** — For business reporting
-- **XML** — For system integrations
-
----
+- **Google Sheets** - Review and compare product data in a spreadsheet.
+- **Airtable** - Maintain a product catalog for research or monitoring.
+- **Webhooks** - Send run results to downstream systems.
+- **Make** - Automate follow-up workflows with collected products.
+- **Dataset API** - Retrieve completed run data programmatically.
 
 ## Frequently Asked Questions
 
-### How many products can I collect?
-You can collect as many products as are available on the website. Use `maxItems` to control the total number of results.
+### Can I collect sale products?
 
-### Does it support sale items?
-Yes, you can specifically target the "Sale" category or see discounted prices in any category scrape.
+Yes. Set `category` to `sale` or use a Browns Shoes collection URL for a sale collection.
 
-### Can I filter by multiple brands?
-Currently, the brand filter supports one brand at a time. To scrape multiple brands, you can use `startUrls` pointing to filtered pages.
+### Can I collect products from more than one collection?
 
-### Is the data updated in real-time?
-The scraper fetches the current data available on the website at the time of the run.
+Yes. Add multiple collection URLs to `startUrls`. The `results_wanted` limit applies to the total number of products saved across those collections.
 
-### Does it handle different languages?
-Yes, the scraper supports both English and French URLs and data.
+### Can I filter by more than one brand?
 
----
+The `brand` input accepts one brand name per run. Run the Actor separately for each brand if you need multiple brand-specific datasets.
+
+### Can I use French collection pages?
+
+Yes. Use a current Browns Shoes URL that includes `/fr/collections/`. French collection requests can return localized product titles; product links use the canonical product URL.
+
+### Why are some fields empty?
+
+Some products may not have a compare-at price, description, images, or variant data in the current listing. Missing source values are returned as null or an empty array where appropriate.
+
+### Can I export results to CSV or Excel?
+
+Yes. Apify datasets can be downloaded in CSV, Excel, JSON, XML, and other supported formats.
+
+### Is this Actor suitable for scheduled collection runs?
+
+Yes. Create an Apify schedule to run the Actor hourly, daily, weekly, or on another interval.
+
+### Is it legal to collect Browns Shoes product data?
+
+Users are responsible for complying with applicable laws and Browns Shoes website terms. Use collected data responsibly.
+
+## Related Actors
+
+- [Myntra Product Scraper 🛍️](https://apify.com/shahidirfan/myntra-product-scraper) - Collect fashion product listings, prices, sizes, and availability for catalog and price research.
+- [Shein Product Scraper](https://apify.com/shahidirfan/shein-product-scraper) - Gather apparel product prices, images, sizes, and discounts for fashion market monitoring.
+- [Flipkart Product Scraper 🛒](https://apify.com/shahidirfan/flipkart-product-scraper) - Collect marketplace product listings, prices, ratings, and availability for ecommerce analysis.
 
 ## Support
 
 For issues or feature requests, contact support through the Apify Console.
 
-### Resources
-
-- [Apify Documentation](https://docs.apify.com/)
-- [API Reference](https://docs.apify.com/api/v2)
-- [Scheduling Runs](https://docs.apify.com/schedules)
-
----
-
 ## Legal Notice
 
-This actor is designed for legitimate data collection purposes. Users are responsible for ensuring compliance with website terms of service and applicable laws. Use data responsibly and respect rate limits.
+This Actor is designed for legitimate data collection from publicly available sources. Users are responsible for using the data responsibly and complying with applicable laws and website terms.

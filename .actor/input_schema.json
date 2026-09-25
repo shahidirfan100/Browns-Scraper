@@ -1,85 +1,61 @@
 {
-  "title": "Browns Shoes API Scraper",
-  "description": "Extract product listings from Browns Shoes using the internal search API only. No DOM parsing and no detail-page crawling.",
-  "type": "object",
-  "schemaVersion": 1,
-  "properties": {
-    "startUrls": {
-      "title": "Start URLs",
-      "type": "array",
-      "description": "Optional Browns category URLs. The actor derives cgid/locale from each URL and scrapes those categories via API.",
-      "editor": "requestListSources",
-      "default": [],
-      "prefill": [
-        {
-          "url": "https://www.brownsshoes.com/en/women"
+    "title": "Browns Shoes API Scraper",
+    "description": "Extract structured product listings from Browns Shoes categories and collections.",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "startUrls": {
+            "title": "Start URLs",
+            "type": "array",
+            "description": "Optional Browns Shoes collection URLs. Shopify collection links such as /collections/womens-boots target that collection directly; /fr/ collection paths preserve French product titles.",
+            "editor": "requestListSources",
+            "default": []
+        },
+        "category": {
+            "title": "Category",
+            "type": "string",
+            "description": "Category to scrape when startUrls are not provided. Options: women, men, kids, or sale.",
+            "editor": "select",
+            "enum": ["women", "men", "kids", "sale"],
+            "enumTitles": ["Women", "Men", "Kids", "Sale"],
+            "default": "women",
+            "prefill": "women"
+        },
+        "brand": {
+            "title": "Brand Filter",
+            "type": "string",
+            "description": "Optional case-insensitive brand filter matched against each product's brand.",
+            "editor": "textfield"
+        },
+        "results_wanted": {
+            "title": "Results Wanted",
+            "type": "integer",
+            "description": "Maximum number of products to save.",
+            "minimum": 1,
+            "default": 20,
+            "prefill": 20,
+            "editor": "number"
+        },
+        "maxPages": {
+            "title": "Maximum Pages",
+            "type": "integer",
+            "description": "Maximum number of pages to read from each collection.",
+            "minimum": 1,
+            "default": 5,
+            "prefill": 5,
+            "editor": "number"
+        },
+
+        "proxyConfiguration": {
+            "title": "Proxy Configuration",
+            "type": "object",
+            "description": "Optional Apify Proxy or custom proxy settings.",
+            "editor": "proxy",
+            "default": {
+                "useApifyProxy": false
+            }
         }
-      ]
     },
-    "category": {
-      "title": "Category",
-      "type": "string",
-      "description": "Category to scrape when startUrls are not provided.",
-      "editor": "select",
-      "enum": [
-        "women",
-        "men",
-        "kids",
-        "sale"
-      ],
-      "enumTitles": [
-        "Women",
-        "Men",
-        "Kids",
-        "Sale"
-      ],
-      "default": "women",
-      "prefill": "women"
-    },
-    "brand": {
-      "title": "Brand Filter",
-      "type": "string",
-      "description": "Optional brand filter (normalized to uppercase for API refine filter).",
-      "editor": "textfield"
-    },
-    "results_wanted": {
-      "title": "Results Wanted",
-      "type": "integer",
-      "description": "Maximum number of products to save.",
-      "minimum": 1,
-      "default": 20,
-      "prefill": 20,
-      "editor": "number"
-    },
-    "maxPages": {
-      "title": "Maximum Pages",
-      "type": "integer",
-      "description": "Maximum number of API pages per category.",
-      "minimum": 1,
-      "default": 5,
-      "prefill": 5,
-      "editor": "number"
-    },
-    "pageSize": {
-      "title": "Page Size",
-      "type": "integer",
-      "description": "Number of products fetched per API request.",
-      "minimum": 1,
-      "maximum": 200,
-      "default": 20,
-      "prefill": 20,
-      "editor": "number"
-    },
-    "proxyConfiguration": {
-      "title": "Proxy Configuration",
-      "type": "object",
-      "description": "Optional proxy settings. Leave disabled for local runs unless needed.",
-      "editor": "proxy",
-      "default": {
-        "useApifyProxy": false
-      }
-    }
-  },
-  "required": [],
-  "additionalProperties": false
+    "required": [],
+    "additionalProperties": false
 }
